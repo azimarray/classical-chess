@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+match_history.json
+match_history.json.corrupt-*
+.DS_Store
