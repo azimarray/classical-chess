@@ -56,9 +56,9 @@ python -m http.server 8000
 | Promote | Pick from the card that opens over the promotion square |
 | Resign / offer draw | Flag and ½ buttons in the header (they act for the side to move) |
 | Mute | Speaker button, `M`, or **Sound On/Off** on the home screen |
-| Skip the intro | **Skip** button (top right), or press `Esc`, `Enter` or `Space` |
+| Skip the intro | Press `Esc`, `Enter` or `Space` |
 
-The intro starts by itself. Browsers only allow sound after the visitor has interacted with a site, so on a first visit most browsers play it muted. When that happens a **Sound on** button appears in the top-right corner and replays the intro with sound; **Skip** sits next to it. Game sounds turn on with the first click or tap.
+The intro starts by itself. Browsers only allow sound after the visitor has interacted with a site, so on a first visit most browsers play it muted. Game sounds turn on with the first click or tap.
 
 ## Desktop version
 
