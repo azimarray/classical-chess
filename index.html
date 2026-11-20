@@ -25,9 +25,6 @@
   --pill: #3C3B39;
   --pill-text: #C3C2C0;
   --intro-bg: #0A0A0A;
-  --start-bg: #B58763;
-  --start-edge: #8C6446;
-  --start-focus: #ECD3B1;
   --font-ui: Figtree, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
 }
 html, body { height: 100%; }
@@ -78,16 +75,6 @@ body { background: var(--bg); color: var(--text); overflow: hidden; font-family:
   visibility: hidden;
 }
 #intro.playing video { visibility: visible; }
-#intro-start {
-  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-  display: inline-flex; align-items: center; gap: 10px;
-  font: 700 20px var(--font-ui); color: var(--text);
-  background: var(--start-bg); border: 0; border-radius: 12px;
-  padding: 16px 34px 16px 28px; cursor: pointer;
-  box-shadow: 0 4px 0 var(--start-edge);
-}
-#intro-start:active { transform: translate(-50%, calc(-50% + 3px)); box-shadow: 0 1px 0 var(--start-edge); }
-#intro-start:focus-visible { outline: 2px solid var(--start-focus); outline-offset: 4px; }
 @media (prefers-reduced-motion: reduce) { #intro { transition: none; } }
 </style>
 <style>html,body{margin:0}:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);box-sizing:border-box}</style>
@@ -95,7 +82,6 @@ body { background: var(--bg); color: var(--text); overflow: hidden; font-family:
 <body>
 <div id="intro">
   <video playsinline preload="auto" aria-label="Intro animation"><source src="splash.mp4" type="video/mp4"><source src="splash.webm" type="video/webm"></video>
-  <button id="intro-start" type="button" hidden><svg width="18" height="20" viewBox="0 0 18 20" aria-hidden="true"><path d="M2 1.5v17l14.5-8.5z" fill="currentColor"/></svg>Start</button>
 </div>
 <div id="wrap">
   <div id="box">
@@ -2111,14 +2097,14 @@ class App {
 
 
 /* ================================================================ intro */
-/* Full-window logo video. Tries to play with sound; if the browser blocks
-   that until the visitor interacts, a Start button plays it on the first tap. */
+/* Full-window logo video that starts by itself. It tries to play with sound;
+   browsers that block sound until the visitor interacts get it muted instead. */
 function removeIntro() { const el = document.getElementById("intro"); if (el) el.remove(); }
 function runIntro(app) {
   const intro = document.getElementById("intro");
   if (!intro) { app.blocked = false; return; }
-  const video = intro.querySelector("video"), startBtn = document.getElementById("intro-start");
-  let done = false, started = false, watchdog = null;
+  const video = intro.querySelector("video");
+  let done = false, watchdog = null;
   const finish = () => {
     if (done) return;
     done = true; clearTimeout(watchdog);
@@ -2127,33 +2113,22 @@ function runIntro(app) {
     app.blocked = false;
     setTimeout(removeIntro, REDUCED_MOTION ? 0 : 500);
   };
-  const showStart = () => { started = false; startBtn.hidden = false; try { startBtn.focus({ preventScroll: true }); } catch (e) {} };
-  const begin = (withSound) => {
-    started = true; startBtn.hidden = true;
-    video.muted = !withSound;
-    try { video.currentTime = 0; } catch (e) {}
-    clearTimeout(watchdog);
-    watchdog = setTimeout(() => { if (video.paused || video.currentTime === 0) finish(); }, 6000);
-    return video.play();
-  };
+  const play = (withSound) => { video.muted = !withSound; return video.play(); };
   video.addEventListener("playing", () => intro.classList.add("playing"));
   video.addEventListener("ended", finish);
   video.addEventListener("error", finish);
   const sources = video.querySelectorAll("source");
   if (sources.length) sources[sources.length - 1].addEventListener("error", finish);
-  const blocked = (err) => { clearTimeout(watchdog); if (err && err.name === "NotSupportedError") finish(); else showStart(); };
-  startBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    app.sound.unlock();
-    begin(true).catch(() => begin(false).catch(finish));
-  });
-  intro.addEventListener("pointerdown", (e) => { if (started && e.target !== startBtn) finish(); });
+  // never leave visitors stuck on a black screen if the video stalls
+  watchdog = setTimeout(() => { if (video.paused || video.currentTime === 0) finish(); }, 5000);
+  intro.addEventListener("pointerdown", () => { app.sound.unlock(); finish(); });
   window.addEventListener("keydown", (e) => {
-    if (done || !started) return;
-    if (["Escape", "Enter", " "].includes(e.key)) { e.preventDefault(); finish(); }
+    if (done) return;
+    if (["Escape", "Enter", " "].includes(e.key)) { e.preventDefault(); app.sound.unlock(); finish(); }
   });
-  if (app.sound.muted) begin(false).catch(blocked);
-  else begin(true).catch(blocked);
+  const silent = () => play(false).catch(finish);
+  if (app.sound.muted) silent();
+  else play(true).catch((err) => (err && err.name === "NotSupportedError" ? finish() : silent()));
 }
 
 /* ================================================================= boot */

@@ -58,7 +58,7 @@ python -m http.server 8000
 | Mute | Speaker button, `M`, or **Sound On/Off** on the home screen |
 | Skip the intro | Tap, or press `Esc`, `Enter` or `Space` |
 
-Browsers only allow sound after the visitor interacts with the page. If the intro can't start with sound, a **Start** button appears and one tap plays it.
+The intro starts by itself. Browsers only allow sound after the visitor has interacted with a site, so on a first visit most browsers play it muted; game sounds turn on with the first click or tap.
 
 ## Desktop version
 
