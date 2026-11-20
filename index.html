@@ -25,6 +25,10 @@
   --pill: #3C3B39;
   --pill-text: #C3C2C0;
   --intro-bg: #0A0A0A;
+  --pill-ink: #F2F2F2;
+  --pill-line: rgba(255, 255, 255, 0.16);
+  --pill-glass: rgba(255, 255, 255, 0.08);
+  --pill-glass-hover: rgba(255, 255, 255, 0.16);
   --font-ui: Figtree, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
 }
 html, body { height: 100%; }
@@ -66,22 +70,43 @@ body { background: var(--bg); color: var(--text); overflow: hidden; font-family:
   display: flex; align-items: center; justify-content: center;
   padding-left: max(16px, env(safe-area-inset-left, 0px));
   padding-right: max(16px, env(safe-area-inset-right, 0px));
-  transition: opacity 0.45s ease;
+  transition: opacity 0.6s ease, visibility 0.6s ease;
 }
-#intro.leaving { opacity: 0; pointer-events: none; }
+#intro.leaving { opacity: 0; visibility: hidden; pointer-events: none; }
 #intro video {
   display: block; width: 100%; max-width: 1280px; max-height: 100%;
   aspect-ratio: 16 / 9; object-fit: contain; background: var(--intro-bg);
   visibility: hidden;
 }
 #intro.playing video { visibility: visible; }
-@media (prefers-reduced-motion: reduce) { #intro { transition: none; } }
+/* Sound / Skip pills: top-right, clear of Netlify's badge at the bottom */
+#intro-controls {
+  position: absolute; display: flex; gap: 8px;
+  top: calc(20px + env(safe-area-inset-top, 0px));
+  right: calc(20px + env(safe-area-inset-right, 0px));
+  opacity: 0; transition: opacity 0.4s ease;
+}
+#intro-controls.visible { opacity: 1; }
+.intro-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 14px; border-radius: 999px;
+  border: 1px solid var(--pill-line); background: var(--pill-glass); color: var(--pill-ink);
+  font: 500 13px/1 var(--font-ui); cursor: pointer;
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+}
+.intro-btn:hover { background: var(--pill-glass-hover); }
+.intro-btn:focus-visible { outline: 2px solid var(--pill-ink); outline-offset: 2px; }
+.intro-btn svg { width: 15px; height: 15px; flex: none; }
+@media (prefers-reduced-motion: reduce) { #intro, #intro-controls { transition: none; } }
 </style>
 <style>html,body{margin:0}:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);box-sizing:border-box}</style>
 </head>
 <body>
-<div id="intro">
-  <video playsinline preload="auto" aria-label="Intro animation"><source src="splash.mp4" type="video/mp4"><source src="splash.webm" type="video/webm"></video>
+<div id="intro" role="dialog" aria-label="Opening animation">
+  <video playsinline preload="auto" aria-label="AZIM ARCHIVE opening animation"><source src="splash.mp4" type="video/mp4"><source src="splash.webm" type="video/webm"></video>
+  <div id="intro-controls">
+    <button id="intro-sound" class="intro-btn" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5h3.2L12 5.5v13l-4.8-4H4z" fill="currentColor" stroke="none"/><path d="M16 9a4.2 4.2 0 0 1 0 6M18.6 6.6a7.6 7.6 0 0 1 0 10.8"/></svg>Sound on</button>
+    <button id="intro-skip" class="intro-btn" type="button">Skip<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l7 6-7 6M15 6v12"/></svg></button>
+  </div>
 </div>
 <div id="wrap">
   <div id="box">
@@ -2097,38 +2122,64 @@ class App {
 
 
 /* ================================================================ intro */
-/* Full-window logo video that starts by itself. It tries to play with sound;
-   browsers that block sound until the visitor interacts get it muted instead. */
+/* Full-window logo video that starts by itself (same behaviour as Chrono Calc).
+   It tries to play with sound; browsers that block that get it muted plus a
+   "Sound on" button that replays it with sound. "Skip" (or Esc / Enter / Space)
+   ends it early. The buttons sit top-right, clear of Netlify's bottom badge. */
 function removeIntro() { const el = document.getElementById("intro"); if (el) el.remove(); }
 function runIntro(app) {
   const intro = document.getElementById("intro");
   if (!intro) { app.blocked = false; return; }
   const video = intro.querySelector("video");
-  let done = false, watchdog = null;
+  const controls = document.getElementById("intro-controls");
+  const soundBtn = document.getElementById("intro-sound");
+  const skipBtn = document.getElementById("intro-skip");
+  let done = false;
+  const timers = [];
   const finish = () => {
     if (done) return;
-    done = true; clearTimeout(watchdog);
+    done = true;
+    timers.forEach(clearTimeout);
     intro.classList.add("leaving");
     try { video.pause(); } catch (e) {}
     app.blocked = false;
-    setTimeout(removeIntro, REDUCED_MOTION ? 0 : 500);
+    setTimeout(removeIntro, REDUCED_MOTION ? 0 : 600);
   };
-  const play = (withSound) => { video.muted = !withSound; return video.play(); };
   video.addEventListener("playing", () => intro.classList.add("playing"));
   video.addEventListener("ended", finish);
   video.addEventListener("error", finish);
   const sources = video.querySelectorAll("source");
   if (sources.length) sources[sources.length - 1].addEventListener("error", finish);
-  // never leave visitors stuck on a black screen if the video stalls
-  watchdog = setTimeout(() => { if (video.paused || video.currentTime === 0) finish(); }, 5000);
-  intro.addEventListener("pointerdown", () => { app.sound.unlock(); finish(); });
+
+  skipBtn.addEventListener("click", () => { app.sound.unlock(); finish(); });
+  soundBtn.addEventListener("click", () => {
+    app.sound.unlock();                       // also switches on the game's sounds
+    video.muted = false;
+    try { video.currentTime = 0; } catch (e) {}
+    video.play().catch(() => {});
+    soundBtn.hidden = true;
+  });
   window.addEventListener("keydown", (e) => {
     if (done) return;
     if (["Escape", "Enter", " "].includes(e.key)) { e.preventDefault(); app.sound.unlock(); finish(); }
   });
-  const silent = () => play(false).catch(finish);
-  if (app.sound.muted) silent();
-  else play(true).catch((err) => (err && err.name === "NotSupportedError" ? finish() : silent()));
+
+  timers.push(setTimeout(() => controls.classList.add("visible"), 500));
+  // if playback never really starts, don't hold the game hostage
+  timers.push(setTimeout(() => { if (!video.currentTime) finish(); }, 3500));
+  // hard cap: the clip is 4 s; allow time for a replay with sound
+  timers.push(setTimeout(finish, 12000));
+
+  video.muted = false;
+  const playMuted = () => {
+    video.muted = true;
+    if (!app.sound.muted) soundBtn.hidden = false;   // offer sound unless the player turned it off
+    return video.play();
+  };
+  (app.sound.muted ? playMuted() : video.play().catch((err) => {
+    if (err && err.name === "NotSupportedError") throw err;
+    return playMuted();
+  })).catch(finish);
 }
 
 /* ================================================================= boot */
