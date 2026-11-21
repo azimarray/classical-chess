@@ -1,5 +1,7 @@
 # Classical Chess
 
+[![Tests](https://github.com/azimarray/classical-chess/actions/workflows/tests.yml/badge.svg)](https://github.com/azimarray/classical-chess/actions/workflows/tests.yml)
+
 Two-player, pass-and-play chess with full FIDE rule enforcement, 10-minute Rapid clocks, hand-drawn vector pieces and synthesised sound effects. Two players share one screen and take turns.
 
 This repository holds two versions of the same game:
@@ -70,6 +72,30 @@ pip install pygame
 python main.py
 python -m unittest test_chess.py -v   # 74 rule tests, no window needed
 ```
+
+## Tests
+
+Every push and pull request runs two test jobs on GitHub Actions (see the **Actions** tab, or the badge at the top):
+
+| Job | What it covers |
+|---|---|
+| **Desktop rules** (Python, 74 tests) | Every chess rule, notation, FEN, the clock and saving history, plus perft move counts against published reference positions |
+| **Website** (Chromium, 30 tests) | The rules engine running in the real page, the intro (with and without sound allowed, keyboard skip), home and setup screens, click and drag moves, castling, en passant, promotion, checkmate, repetition, resign, draw offers, timeouts, leaving a game, rematch, saving, listing and deleting match history, keyboard shortcuts, sound effects, layout at five screen sizes from laptop to small phone, and no JavaScript errors |
+
+Run them on your own computer:
+
+```bash
+# desktop rules
+cd desktop && python -m unittest test_chess.py -v
+
+# website (needs Node.js 18+)
+cd tests
+npm install
+npx playwright install chromium
+node e2e.js
+```
+
+The browser tests start their own small web server for the repository, so nothing else needs to be running.
 
 ## Rule notes
 

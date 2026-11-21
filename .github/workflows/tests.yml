@@ -1,0 +1,37 @@
+# Runs every test on each push and pull request (and on demand from the Actions tab).
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  desktop:
+    name: Desktop rules (Python, 74 tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run rules tests (no window or Pygame needed)
+        working-directory: desktop
+        run: python -m unittest test_chess.py -v
+
+  website:
+    name: Website (Chromium, end-to-end)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install Playwright and Chromium
+        working-directory: tests
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Run browser tests
+        working-directory: tests
+        run: node e2e.js

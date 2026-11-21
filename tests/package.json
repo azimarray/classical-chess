@@ -1,0 +1,11 @@
+{
+  "name": "classical-chess-tests",
+  "private": true,
+  "description": "End-to-end browser tests for the Classical Chess website",
+  "scripts": {
+    "test": "node e2e.js"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
+  }
+}
