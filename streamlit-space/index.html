@@ -1,0 +1,2140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23B58763'/%3E%3Ccircle cx='32' cy='20' r='8' fill='%23F4D374' stroke='%233D3222' stroke-width='2'/%3E%3Cpath d='M26 29h12l3 20H23z' fill='%23F4D374' stroke='%233D3222' stroke-width='2' stroke-linejoin='round'/%3E%3Crect x='17' y='48' width='30' height='7' rx='2' fill='%23F4D374' stroke='%233D3222' stroke-width='2'/%3E%3C/svg%3E">
+<title>Classical Chess</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Two-player pass-and-play chess with full rule enforcement and 10-minute clocks.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@500;700&display=swap">
+<style>
+/* Layout: one fixed 640x892 game canvas, scaled to fit the window. Single dark look (wood board on charcoal). */
+:root {
+  color-scheme: dark;
+  --bg: #262421;
+  --field: #1E1D1B;
+  --field-border: #3C3B39;
+  --field-border-hover: #4A4947;
+  --focus: #B58763;
+  --caret: #ECD3B1;
+  --text: #FFFFFF;
+  --muted: #8B8987;
+  --pill: #3C3B39;
+  --pill-text: #C3C2C0;
+  --font-ui: Figtree, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+}
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--text); overflow: hidden; font-family: var(--font-ui); }
+[hidden] { display: none !important; }
+#wrap {
+  height: 100%;
+  box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center;
+  padding-block: 12px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+#box { position: relative; flex: none; }
+#stage { position: absolute; left: 0; top: 0; width: 640px; height: 892px; transform-origin: 0 0; }
+#board {
+  display: block; width: 640px; height: 892px;
+  touch-action: none; user-select: none; -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.field { position: absolute; height: 56px; }
+.field input {
+  width: 100%; height: 100%; box-sizing: border-box; margin: 0;
+  background: var(--field); color: var(--text); caret-color: var(--caret);
+  border: 2px solid var(--field-border); border-radius: 8px;
+  font: 700 20px var(--font-ui); padding: 0 64px 0 14px; outline: none;
+}
+.field input::placeholder { color: var(--muted); opacity: 1; }
+.field input:hover { border-color: var(--field-border-hover); }
+.field input:focus, .field input:focus-visible { border-color: var(--focus); }
+.field .tag {
+  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+  background: var(--pill); color: var(--pill-text);
+  font: 700 13px var(--font-ui); padding: 4px 7px; border-radius: 999px; pointer-events: none;
+}
+</style>
+<style>html,body{margin:0}:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);box-sizing:border-box}</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="box">
+    <div id="stage">
+      <canvas id="board" role="img" aria-label="Classical Chess: two-player chess board and controls"></canvas>
+      <div class="field" hidden><input id="p1-name" type="text" maxlength="16" placeholder="Player 1" aria-label="Player 1 name" autocomplete="off" spellcheck="false"><span class="tag">P1</span></div>
+      <div class="field" hidden><input id="p2-name" type="text" maxlength="16" placeholder="Player 2" aria-label="Player 2 name" autocomplete="off" spellcheck="false"><span class="tag">P2</span></div>
+    </div>
+  </div>
+</div>
+<script>
+/* ==========================================================================
+   Classical Chess rules engine (port of pieces.py, board.py, game.py, timer.py)
+   Squares are integers 0..63: row * 8 + col. Row 0 is rank 8, col 0 is the a-file.
+   ========================================================================== */
+const WHITE = "w", BLACK = "b";
+const COLOR_NAMES = { w: "White", b: "Black" };
+const PIECE_VALUES = { P: 1, N: 3, B: 3, R: 5, Q: 9, K: 0 };
+const START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+const FILES = "abcdefgh";
+const RAPID_SECONDS = 600;
+const LOW_TIME_THRESHOLD = 20;
+
+const opposite = (c) => (c === WHITE ? BLACK : WHITE);
+const inBounds = (r, c) => r >= 0 && r < 8 && c >= 0 && c < 8;
+const sqOf = (r, c) => r * 8 + c;
+const rowOf = (s) => s >> 3;
+const colOf = (s) => s & 7;
+const squareName = (s) => FILES[colOf(s)] + (8 - rowOf(s));
+function parseSquare(name) {
+  name = String(name).trim().toLowerCase();
+  if (name.length !== 2 || !FILES.includes(name[0]) || !"12345678".includes(name[1]))
+    throw new Error("Invalid square name: " + name);
+  return sqOf(8 - Number(name[1]), FILES.indexOf(name[0]));
+}
+const isLightSquare = (s) => (rowOf(s) + colOf(s)) % 2 === 0;
+
+function makeMove(start, end, opts = {}) {
+  return { start, end, promotion: opts.promotion || null,
+           isEnPassant: !!opts.isEnPassant, isCastle: !!opts.isCastle,
+           isDoublePush: !!opts.isDoublePush };
+}
+const moveUci = (m) => squareName(m.start) + squareName(m.end) + (m.promotion ? m.promotion.toLowerCase() : "");
+
+/* ---------------------------------------------------------------- pieces */
+class Piece {
+  constructor(color, hasMoved = false) {
+    if (color !== WHITE && color !== BLACK) throw new Error("Invalid colour");
+    this.color = color;
+    this.hasMoved = hasMoved;
+  }
+  get value() { return PIECE_VALUES[this.kind]; }
+  get symbol() { return this.color === WHITE ? this.kind : this.kind.toLowerCase(); }
+  clone() { return new this.constructor(this.color, this.hasMoved); }
+  isEnemyOrEmpty(board, t) { const o = board.pieceAt(t); return !o || o.color !== this.color; }
+}
+
+const ORTHO = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+const DIAG = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
+const KNIGHT_OFFSETS = [[-2, -1], [-2, 1], [-1, -2], [-1, 2], [1, -2], [1, 2], [2, -1], [2, 1]];
+
+class SlidingPiece extends Piece {
+  attacks(board, s) {
+    const out = [], r0 = rowOf(s), c0 = colOf(s);
+    for (const [dr, dc] of this.directions) {
+      let r = r0 + dr, c = c0 + dc;
+      while (inBounds(r, c)) {
+        const t = sqOf(r, c);
+        out.push(t);
+        if (board.grid[t]) break;
+        r += dr; c += dc;
+      }
+    }
+    return out;
+  }
+  pseudoLegalMoves(board, s) {
+    return this.attacks(board, s).filter((t) => this.isEnemyOrEmpty(board, t)).map((t) => makeMove(s, t));
+  }
+}
+class LeapingPiece extends Piece {
+  attacks(board, s) {
+    const out = [], r0 = rowOf(s), c0 = colOf(s);
+    for (const [dr, dc] of this.offsets) if (inBounds(r0 + dr, c0 + dc)) out.push(sqOf(r0 + dr, c0 + dc));
+    return out;
+  }
+  pseudoLegalMoves(board, s) {
+    return this.attacks(board, s).filter((t) => this.isEnemyOrEmpty(board, t)).map((t) => makeMove(s, t));
+  }
+}
+class Rook extends SlidingPiece {}
+Rook.prototype.kind = "R"; Rook.prototype.directions = ORTHO;
+class Bishop extends SlidingPiece {}
+Bishop.prototype.kind = "B"; Bishop.prototype.directions = DIAG;
+class Queen extends SlidingPiece {}
+Queen.prototype.kind = "Q"; Queen.prototype.directions = ORTHO.concat(DIAG);
+class Knight extends LeapingPiece {}
+Knight.prototype.kind = "N"; Knight.prototype.offsets = KNIGHT_OFFSETS;
+
+class King extends LeapingPiece {
+  pseudoLegalMoves(board, s) {
+    return super.pseudoLegalMoves(board, s).concat(this.castlingMoves(board, s));
+  }
+  castlingMoves(board, s) {
+    const home = this.color === WHITE ? 7 : 0;
+    if (s !== sqOf(home, 4)) return [];
+    const rights = board.castlingRights;
+    const [ks, qs] = this.color === WHITE ? ["K", "Q"] : ["k", "q"];
+    if (!rights.has(ks) && !rights.has(qs)) return [];
+    const enemy = opposite(this.color);
+    if (board.isSquareAttacked(s, enemy)) return [];
+    const moves = [];
+    const rookReady = (c) => { const p = board.grid[sqOf(home, c)]; return p instanceof Rook && p.color === this.color; };
+    const empty = (cols) => cols.every((c) => !board.grid[sqOf(home, c)]);
+    const safe = (cols) => !cols.some((c) => board.isSquareAttacked(sqOf(home, c), enemy));
+    if (rights.has(ks) && rookReady(7) && empty([5, 6]) && safe([5, 6]))
+      moves.push(makeMove(s, sqOf(home, 6), { isCastle: true }));
+    if (rights.has(qs) && rookReady(0) && empty([1, 2, 3]) && safe([2, 3]))
+      moves.push(makeMove(s, sqOf(home, 2), { isCastle: true }));
+    return moves;
+  }
+}
+King.prototype.kind = "K"; King.prototype.offsets = ORTHO.concat(DIAG);
+
+class Pawn extends Piece {
+  get direction() { return this.color === WHITE ? -1 : 1; }
+  get startRow() { return this.color === WHITE ? 6 : 1; }
+  get promotionRow() { return this.color === WHITE ? 0 : 7; }
+  attacks(board, s) {
+    const out = [], tr = rowOf(s) + this.direction, c = colOf(s);
+    for (const dc of [-1, 1]) if (inBounds(tr, c + dc)) out.push(sqOf(tr, c + dc));
+    return out;
+  }
+  withPromotions(start, end, flags = {}) {
+    if (rowOf(end) === this.promotionRow)
+      return ["Q", "R", "B", "N"].map((p) => makeMove(start, end, { ...flags, promotion: p }));
+    return [makeMove(start, end, flags)];
+  }
+  pseudoLegalMoves(board, s) {
+    const moves = [], r = rowOf(s), c = colOf(s);
+    const r1 = r + this.direction;
+    if (inBounds(r1, c) && !board.grid[sqOf(r1, c)]) {
+      moves.push(...this.withPromotions(s, sqOf(r1, c)));
+      const r2 = r + 2 * this.direction;
+      if (r === this.startRow && !board.grid[sqOf(r2, c)])
+        moves.push(makeMove(s, sqOf(r2, c), { isDoublePush: true }));
+    }
+    for (const t of this.attacks(board, s)) {
+      const occ = board.grid[t];
+      if (occ && occ.color !== this.color) moves.push(...this.withPromotions(s, t));
+      else if (!occ && t === board.enPassant) {
+        const victim = board.grid[sqOf(r, colOf(t))];
+        if (victim instanceof Pawn && victim.color !== this.color)
+          moves.push(makeMove(s, t, { isEnPassant: true }));
+      }
+    }
+    return moves;
+  }
+}
+Pawn.prototype.kind = "P";
+
+const PIECE_CLASSES = { P: Pawn, N: Knight, B: Bishop, R: Rook, Q: Queen, K: King };
+function createPiece(kind, color, hasMoved = false) {
+  const cls = PIECE_CLASSES[String(kind).toUpperCase()];
+  if (!cls) throw new Error("Unknown piece kind: " + kind);
+  return new cls(color, hasMoved);
+}
+const pieceFromSymbol = (ch) => createPiece(ch.toUpperCase(), ch === ch.toUpperCase() ? WHITE : BLACK);
+
+/* ----------------------------------------------------------------- board */
+const ROOK_CORNERS = { [sqOf(7, 7)]: "K", [sqOf(7, 0)]: "Q", [sqOf(0, 7)]: "k", [sqOf(0, 0)]: "q" };
+const CASTLING_ORDER = "KQkq";
+
+class Board {
+  constructor(fen = START_FEN) {
+    this.grid = new Array(64).fill(null);
+    this.turn = WHITE;
+    this.castlingRights = new Set();
+    this.enPassant = null;
+    this.halfmove = 0;
+    this.fullmove = 1;
+    if (fen) this.loadFen(fen);
+  }
+  copy() {
+    const b = new Board(null);
+    b.grid = this.grid.map((p) => (p ? p.clone() : null));
+    b.turn = this.turn;
+    b.castlingRights = new Set(this.castlingRights);
+    b.enPassant = this.enPassant;
+    b.halfmove = this.halfmove;
+    b.fullmove = this.fullmove;
+    return b;
+  }
+  pieceAt(s) { return this.grid[s]; }
+  setPiece(s, p) { this.grid[s] = p; }
+  pieces(color = null) {
+    const out = [];
+    for (let s = 0; s < 64; s++) {
+      const p = this.grid[s];
+      if (p && (color === null || p.color === color)) out.push([s, p]);
+    }
+    return out;
+  }
+  findKing(color) {
+    for (let s = 0; s < 64; s++) { const p = this.grid[s]; if (p instanceof King && p.color === color) return s; }
+    return null;
+  }
+  isSquareAttacked(square, byColor) {
+    for (let s = 0; s < 64; s++) {
+      const p = this.grid[s];
+      if (p && p.color === byColor && p.attacks(this, s).includes(square)) return true;
+    }
+    return false;
+  }
+  inCheck(color) {
+    const k = this.findKing(color);
+    return k !== null && this.isSquareAttacked(k, opposite(color));
+  }
+  makeMove(move) {
+    const { start, end } = move;
+    const piece = this.grid[start];
+    if (!piece) throw new Error("No piece on " + squareName(start));
+    const isPawn = piece instanceof Pawn;
+    const isCastle = piece instanceof King && Math.abs(colOf(end) - colOf(start)) === 2;
+    const isEnPassant = isPawn && colOf(start) !== colOf(end) && !this.grid[end] && end === this.enPassant;
+    const isDoublePush = isPawn && Math.abs(rowOf(end) - rowOf(start)) === 2;
+
+    let capturedSquare = isEnPassant ? sqOf(rowOf(start), colOf(end)) : end;
+    const captured = this.grid[capturedSquare];
+    if (!captured) capturedSquare = null;
+    else if (capturedSquare !== end) this.grid[capturedSquare] = null;
+
+    this.grid[start] = null;
+    let placed = piece;
+    const isPromotion = isPawn && (rowOf(end) === 0 || rowOf(end) === 7);
+    if (isPromotion) placed = createPiece(move.promotion || "Q", piece.color, true);
+    else piece.hasMoved = true;
+    this.grid[end] = placed;
+
+    let rookMove = null;
+    if (isCastle) {
+      const r = rowOf(start);
+      const [from, to] = colOf(end) === 6 ? [sqOf(r, 7), sqOf(r, 5)] : [sqOf(r, 0), sqOf(r, 3)];
+      const rook = this.grid[from];
+      this.grid[from] = null;
+      this.grid[to] = rook;
+      if (rook) rook.hasMoved = true;
+      rookMove = [from, to];
+    }
+
+    if (piece instanceof King) {
+      for (const r of piece.color === WHITE ? ["K", "Q"] : ["k", "q"]) this.castlingRights.delete(r);
+    }
+    for (const corner of [start, end]) { const r = ROOK_CORNERS[corner]; if (r) this.castlingRights.delete(r); }
+
+    this.enPassant = isDoublePush ? sqOf((rowOf(start) + rowOf(end)) >> 1, colOf(start)) : null;
+    this.halfmove = isPawn || captured ? 0 : this.halfmove + 1;
+    if (this.turn === BLACK) this.fullmove += 1;
+    this.turn = opposite(this.turn);
+    return { move, piece, placed, captured: captured || null, capturedSquare, rookMove,
+             isCastle, isEnPassant, isPromotion };
+  }
+  loadFen(fen) {
+    const f = fen.trim().split(/\s+/);
+    if (f.length < 4) throw new Error("Invalid FEN");
+    const [placement, turn, castling, ep] = f;
+    const ranks = placement.split("/");
+    if (ranks.length !== 8) throw new Error("FEN placement must have 8 ranks");
+    this.grid = new Array(64).fill(null);
+    ranks.forEach((rank, r) => {
+      let c = 0;
+      for (const ch of rank) {
+        if (/\d/.test(ch)) c += Number(ch);
+        else { if (c > 7) throw new Error("Too many squares in FEN rank"); this.grid[sqOf(r, c)] = pieceFromSymbol(ch); c++; }
+      }
+      if (c !== 8) throw new Error("FEN rank does not have 8 squares");
+    });
+    if (turn !== WHITE && turn !== BLACK) throw new Error("FEN side to move must be w or b");
+    this.turn = turn;
+    this.castlingRights = new Set(castling === "-" ? [] : [...castling].filter((c) => CASTLING_ORDER.includes(c)));
+    this.enPassant = ep === "-" ? null : parseSquare(ep);
+    this.halfmove = Number(f[4] ?? 0);
+    this.fullmove = Number(f[5] ?? 1);
+    for (const [s, p] of this.pieces()) {
+      if (p instanceof Pawn) p.hasMoved = rowOf(s) !== p.startRow;
+      else if (p instanceof King) {
+        const home = p.color === WHITE ? sqOf(7, 4) : sqOf(0, 4);
+        const rights = p.color === WHITE ? ["K", "Q"] : ["k", "q"];
+        p.hasMoved = s !== home || !rights.some((r) => this.castlingRights.has(r));
+      } else {
+        const r = ROOK_CORNERS[s];
+        p.hasMoved = !(r && this.castlingRights.has(r) && p.kind === "R");
+      }
+    }
+  }
+  placementFen() {
+    const rows = [];
+    for (let r = 0; r < 8; r++) {
+      let out = "", empty = 0;
+      for (let c = 0; c < 8; c++) {
+        const p = this.grid[sqOf(r, c)];
+        if (!p) empty++;
+        else { if (empty) { out += empty; empty = 0; } out += p.symbol; }
+      }
+      if (empty) out += empty;
+      rows.push(out);
+    }
+    return rows.join("/");
+  }
+  castlingFen() { return [...CASTLING_ORDER].filter((c) => this.castlingRights.has(c)).join("") || "-"; }
+  toFen() {
+    const ep = this.enPassant === null ? "-" : squareName(this.enPassant);
+    return `${this.placementFen()} ${this.turn} ${this.castlingFen()} ${ep} ${this.halfmove} ${this.fullmove}`;
+  }
+  positionKey() {
+    let ep = "-";
+    if (this.enPassant !== null) {
+      const pr = rowOf(this.enPassant) + (this.turn === WHITE ? 1 : -1);
+      for (const dc of [-1, 1]) {
+        const c = colOf(this.enPassant) + dc;
+        if (inBounds(pr, c)) {
+          const p = this.grid[sqOf(pr, c)];
+          if (p instanceof Pawn && p.color === this.turn) { ep = squareName(this.enPassant); break; }
+        }
+      }
+    }
+    return `${this.placementFen()} ${this.turn} ${this.castlingFen()} ${ep}`;
+  }
+}
+
+/* ------------------------------------------------------------------ rules */
+const ONGOING = "ongoing", CHECKMATE = "checkmate", STALEMATE = "stalemate",
+  INSUFFICIENT_MATERIAL = "insufficient_material", THREEFOLD_REPETITION = "threefold_repetition",
+  FIFTY_MOVE_RULE = "fifty_move_rule", RESIGNATION = "resignation", DRAW_AGREEMENT = "draw_agreement",
+  TIMEOUT = "timeout", TIMEOUT_VS_INSUFFICIENT = "timeout_vs_insufficient_material";
+
+const REASON_TEXT = {
+  [CHECKMATE]: "by checkmate", [STALEMATE]: "by stalemate",
+  [INSUFFICIENT_MATERIAL]: "by insufficient material", [THREEFOLD_REPETITION]: "by threefold repetition",
+  [FIFTY_MOVE_RULE]: "by the 50-move rule", [RESIGNATION]: "by resignation",
+  [DRAW_AGREEMENT]: "by agreement", [TIMEOUT]: "on time",
+  [TIMEOUT_VS_INSUFFICIENT]: "timeout vs insufficient material",
+};
+
+function isMoveSafe(board, move, color) {
+  const sim = board.copy();
+  sim.makeMove(move);
+  return !sim.inCheck(color);
+}
+function generateLegalMoves(board, color = null) {
+  color = color || board.turn;
+  const legal = [];
+  for (const [s, p] of board.pieces(color))
+    for (const m of p.pseudoLegalMoves(board, s)) if (isMoveSafe(board, m, color)) legal.push(m);
+  return legal;
+}
+function isInsufficientMaterial(board) {
+  const minors = [];
+  for (const [s, p] of board.pieces()) {
+    if (p instanceof King) continue;
+    if (p instanceof Knight || p instanceof Bishop) minors.push([s, p]);
+    else return false;
+  }
+  if (minors.length <= 1) return true;
+  if (minors.every(([, p]) => p instanceof Bishop))
+    return new Set(minors.map(([s]) => isLightSquare(s))).size === 1;
+  return false;
+}
+function canCheckmate(board, color) {
+  const mat = board.pieces(color).map(([, p]) => p).filter((p) => !(p instanceof King));
+  if (!mat.length) return false;
+  if (mat.length === 1 && (mat[0] instanceof Knight || mat[0] instanceof Bishop)) return false;
+  return true;
+}
+function moveToSan(board, move, legalMoves) {
+  const piece = board.grid[move.start];
+  if (piece instanceof King && Math.abs(colOf(move.end) - colOf(move.start)) === 2)
+    return colOf(move.end) === 6 ? "O-O" : "O-O-O";
+  const target = squareName(move.end);
+  if (piece instanceof Pawn) {
+    let san = colOf(move.start) !== colOf(move.end) ? squareName(move.start)[0] + "x" + target : target;
+    if (move.promotion) san += "=" + move.promotion;
+    return san;
+  }
+  const isCapture = !!board.grid[move.end];
+  const rivals = legalMoves.filter((m) => m.end === move.end && m.start !== move.start &&
+    board.grid[m.start] && board.grid[m.start].kind === piece.kind).map((m) => m.start);
+  let dis = "";
+  if (rivals.length) {
+    const name = squareName(move.start);
+    if (rivals.every((r) => colOf(r) !== colOf(move.start))) dis = name[0];
+    else if (rivals.every((r) => rowOf(r) !== rowOf(move.start))) dis = name[1];
+    else dis = name;
+  }
+  return piece.kind + dis + (isCapture ? "x" : "") + target;
+}
+
+class Game {
+  constructor(whiteName = "White", blackName = "Black", fen = START_FEN) {
+    this.whiteName = whiteName;
+    this.blackName = blackName;
+    this.board = new Board(fen);
+    this.history = [];
+    this.captured = { w: [], b: [] };
+    this.positionCounts = new Map([[this.board.positionKey(), 1]]);
+    this.outcome = null;
+    this._legal = null;
+    this._evaluate();
+  }
+  get turn() { return this.board.turn; }
+  get isOver() { return this.outcome !== null; }
+  get status() { return this.outcome ? this.outcome.status : ONGOING; }
+  playerName(c) { return c === WHITE ? this.whiteName : this.blackName; }
+  legalMoves() {
+    if (this.isOver) return [];
+    if (!this._legal) this._legal = generateLegalMoves(this.board);
+    return this._legal;
+  }
+  legalMovesFrom(s) { return this.legalMoves().filter((m) => m.start === s); }
+  legalTargets(s) { return new Set(this.legalMovesFrom(s).map((m) => m.end)); }
+  findMove(start, end, promotion = null) {
+    const promo = (promotion || "").toUpperCase();
+    return this.legalMoves().find((m) => m.start === start && m.end === end &&
+      (m.promotion === null || m.promotion === promo)) || null;
+  }
+  isPromotionMove(start, end) { return this.legalMoves().some((m) => m.start === start && m.end === end && m.promotion); }
+  inCheck() { return this.board.inCheck(this.turn); }
+  checkedKingSquare() { return this.board.inCheck(this.turn) ? this.board.findKing(this.turn) : null; }
+  material(c) { return this.board.pieces(c).reduce((t, [, p]) => t + PIECE_VALUES[p.kind], 0); }
+  materialAdvantage(c) { return Math.max(0, this.material(c) - this.material(opposite(c))); }
+  capturedBy(c) { return this.captured[c].slice(); }
+  fullmoveCount() { return (this.history.length + 1) >> 1; }
+  sanList() { return this.history.map((r) => r.san); }
+  lastMove() { return this.history.length ? this.history[this.history.length - 1] : null; }
+  fen() { return this.board.toFen(); }
+
+  makeMove(start, end, promotion = null) {
+    if (this.isOver) throw new Error("The game is over");
+    if (this.isPromotionMove(start, end) && !promotion) throw new Error("A promotion piece is required");
+    const move = this.findMove(start, end, promotion);
+    if (!move) throw new Error("Illegal move " + squareName(start) + squareName(end));
+    const mover = this.turn;
+    let san = moveToSan(this.board, move, this.legalMoves());
+    const applied = this.board.makeMove(move);
+    this._legal = null;
+    if (applied.captured) this.captured[mover].push(applied.captured.kind);
+    const key = this.board.positionKey();
+    this.positionCounts.set(key, (this.positionCounts.get(key) || 0) + 1);
+    const inCheck = this.board.inCheck(this.turn);
+    const hasReply = generateLegalMoves(this.board).length > 0;
+    const isMate = inCheck && !hasReply;
+    san += isMate ? "#" : inCheck ? "+" : "";
+    const record = { move, san, color: mover, pieceKind: applied.piece.kind,
+      capturedKind: applied.captured ? applied.captured.kind : null, applied,
+      fenAfter: this.board.toFen(), isCheck: inCheck, isCheckmate: isMate };
+    this.history.push(record);
+    this._evaluate(inCheck, hasReply);
+    return record;
+  }
+  resign(color) { this._requireOngoing(); return this._finish(RESIGNATION, opposite(color)); }
+  agreeDraw() { this._requireOngoing(); return this._finish(DRAW_AGREEMENT, null); }
+  timeout(color) {
+    this._requireOngoing();
+    const opp = opposite(color);
+    if (!canCheckmate(this.board, opp)) return this._finish(TIMEOUT_VS_INSUFFICIENT, null);
+    return this._finish(TIMEOUT, opp);
+  }
+  resultHeadline() {
+    if (!this.outcome) return "";
+    return this.outcome.winner === null ? "Draw" : this.playerName(this.outcome.winner) + " Wins";
+  }
+  resultReason() { return this.outcome ? REASON_TEXT[this.outcome.status] || "" : ""; }
+  _requireOngoing() { if (this.isOver) throw new Error("The game is over"); }
+  _finish(status, winner) {
+    const result = winner === WHITE ? "1-0" : winner === BLACK ? "0-1" : "1/2-1/2";
+    this.outcome = { status, result, winner };
+    this._legal = [];
+    return this.outcome;
+  }
+  _evaluate(inCheck = null, hasReply = null) {
+    if (inCheck === null) inCheck = this.board.inCheck(this.turn);
+    if (hasReply === null) hasReply = generateLegalMoves(this.board).length > 0;
+    if (!hasReply) this._finish(inCheck ? CHECKMATE : STALEMATE, inCheck ? opposite(this.turn) : null);
+    else if (isInsufficientMaterial(this.board)) this._finish(INSUFFICIENT_MATERIAL, null);
+    else if ((this.positionCounts.get(this.board.positionKey()) || 0) >= 3) this._finish(THREEFOLD_REPETITION, null);
+    else if (this.board.halfmove >= 100) this._finish(FIFTY_MOVE_RULE, null);
+  }
+}
+
+/* ------------------------------------------------------------------ clock */
+class ChessClock {
+  constructor(initial = RAPID_SECONDS, increment = 0, timeSource = () => performance.now() / 1000) {
+    this.increment = increment;
+    this.now = timeSource;
+    this.remaining = { w: initial, b: initial };
+    this.active = null;
+    this.running = false;
+    this.lastTick = null;
+  }
+  _sync() {
+    if (this.running && this.active && this.lastTick !== null) {
+      const now = this.now();
+      this.remaining[this.active] = Math.max(0, this.remaining[this.active] - (now - this.lastTick));
+      this.lastTick = now;
+    }
+  }
+  timeLeft(c) { this._sync(); return this.remaining[c]; }
+  start(c = WHITE) { this.active = c; this.running = true; this.lastTick = this.now(); }
+  switch() {
+    if (!this.active) return;
+    this._sync();
+    this.remaining[this.active] += this.increment;
+    this.active = opposite(this.active);
+    this.lastTick = this.now();
+  }
+  pause() { this._sync(); this.running = false; }
+  resume() { if (this.active && !this.running) { this.running = true; this.lastTick = this.now(); } }
+  stop() { this._sync(); this.running = false; this.active = null; }
+  flagged() { this._sync(); return this.active && this.remaining[this.active] <= 0 ? this.active : null; }
+  static format(seconds) {
+    seconds = Math.max(0, seconds);
+    if (seconds < LOW_TIME_THRESHOLD) {
+      const t = Math.floor(seconds * 10 + 1e-9);
+      return `${Math.floor(t / 600)}:${String(Math.floor(t / 10) % 60).padStart(2, "0")}.${t % 10}`;
+    }
+    const whole = Math.floor(seconds + 1e-9);
+    const h = Math.floor(whole / 3600), m = Math.floor((whole % 3600) / 60), s = whole % 60;
+    return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
+  }
+}
+
+function relativeTime(ts, now = Date.now() / 1000) {
+  const hours = Math.floor(Math.max(0, now - ts) / 3600);
+  return hours === 0 ? "Just now" : hours === 1 ? "1 hour ago" : `${hours} hours ago`;
+}
+/* ==========================================================================
+   Classical Chess interface (port of ui.py, sounds.py, history_manager.py)
+   Everything draws on a fixed 640 x 892 logical canvas scaled to the window.
+   ========================================================================== */
+const hex = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+const css = (c, a = 1) => (a >= 1 ? `rgb(${c[0]},${c[1]},${c[2]})` : `rgba(${c[0]},${c[1]},${c[2]},${a})`);
+
+const C = {
+  LIGHT: hex("#ECD3B1"), DARK: hex("#B58763"),
+  BG_MAIN: hex("#262421"), BG_DEEP: hex("#1E1D1B"), BG_SURFACE: hex("#2C2B29"),
+  BG_RAISED: hex("#3C3B39"), BG_RAISED_2: hex("#4A4947"),
+  LAST_MOVE: [hex("#F5F682"), 0.45], SELECTED: [hex("#F5F682"), 0.55],
+  CHECK: hex("#E03C31"), CHECK_ALPHA: 0.65,
+  TIMER_ACTIVE_BG: hex("#3C3B39"), TIMER_INACTIVE_BG: hex("#2B2A28"),
+  TIMER_ACTIVE_TEXT: [255, 255, 255], TIMER_INACTIVE_TEXT: hex("#8B8987"),
+  TIMER_URGENT_BG: hex("#B8341F"), TIMER_URGENT_TEXT: hex("#FF8A4C"),
+  TEXT: [255, 255, 255], TEXT_2: hex("#C3C2C0"), TEXT_MUTED: hex("#8B8987"), TEXT_DARK: hex("#1E1D1B"),
+  BTN_PRIMARY: hex("#B58763"), BTN_PRIMARY_HOVER: hex("#C4966F"), BTN_PRIMARY_EDGE: hex("#8C6446"),
+  BTN_SECONDARY: hex("#3C3B39"), BTN_SECONDARY_HOVER: hex("#4A4947"), BTN_SECONDARY_EDGE: hex("#232220"),
+  BTN_DANGER: hex("#C9412F"), BTN_DANGER_HOVER: hex("#D9523F"), BTN_DANGER_EDGE: hex("#8E2A1D"),
+  AVATAR_BG: hex("#DEDCD9"),
+};
+const PALETTES = {
+  white: { fill: hex("#F4D374"), shade: hex("#D9B04C"), highlight: hex("#FBE6A2"), outline: hex("#3D3222") },
+  black: { fill: hex("#4A4947"), shade: hex("#3A3937"), highlight: hex("#666563"), outline: hex("#1E1D1B") },
+  splash_pawn: { fill: [hex("#F4D374"), hex("#B58763")], shade: hex("#A57552"), highlight: hex("#FBE6A2"), outline: null },
+  splash_dark: { fill: hex("#4A4947"), shade: hex("#3E3D3B"), highlight: null, outline: null },
+  avatar: { fill: hex("#A3A19E"), shade: hex("#8D8B88"), highlight: null, outline: null },
+  captured_black: { fill: hex("#77756F"), shade: hex("#64625D"), highlight: hex("#8E8C86"), outline: hex("#141312") },
+  strip_hollow: { fill: hex("#1E1D1B"), shade: hex("#1E1D1B"), highlight: null, outline: hex("#D6D5D3") },
+  strip_solid: { fill: hex("#D6D5D3"), shade: hex("#BEBDBB"), highlight: null, outline: hex("#D6D5D3") },
+};
+const paletteFor = (color) => (color === WHITE ? "white" : "black");
+
+const SQ = 80, BOARD = 640, W = 640;
+const HEADER_H = 56, MOVE_BAR_Y = 56, MOVE_BAR_H = 44, TOP_BAR_Y = 100, BOARD_Y = 176, BAR_H = 76;
+const BOTTOM_BAR_Y = BOARD_Y + BOARD, H = BOTTOM_BAR_Y + BAR_H;
+const REDUCED_MOTION = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+const MOVE_ANIM = REDUCED_MOTION ? 0.0001 : 0.12;
+const FADE = REDUCED_MOTION ? 0.0001 : 0.25;
+const PROMOTION_CHOICES = ["Q", "N", "R", "B"];
+const CAPTURE_ORDER = ["P", "N", "B", "R", "Q"];
+const MAX_NAME = 16, MAX_HISTORY = 250;
+const FONT_STACK = 'Figtree, "Segoe UI", "Helvetica Neue", Arial, sans-serif';
+
+/* ---------------------------------------------------------------- helpers */
+const clamp = (x, lo = 0, hi = 1) => (x < lo ? lo : x > hi ? hi : x);
+const lerp = (a, b, t) => a + (b - a) * t;
+const mix = (a, b, t) => a.map((v, i) => Math.round(lerp(v, b[i], t)));
+const easeOutCubic = (t) => 1 - (1 - clamp(t)) ** 3;
+const easeInOut = (t) => { t = clamp(t); return t * t * (3 - 2 * t); };
+const easeOutBack = (t, s = 1.55) => { t = clamp(t) - 1; return t * t * ((s + 1) * t + s) + 1; };
+
+class Rect {
+  constructor(x, y, w, h) { this.x = x; this.y = y; this.w = w; this.h = h; }
+  get right() { return this.x + this.w; }
+  get bottom() { return this.y + this.h; }
+  get cx() { return this.x + this.w / 2; }
+  get cy() { return this.y + this.h / 2; }
+  contains(p) { return !!p && p[0] >= this.x && p[0] < this.x + this.w && p[1] >= this.y && p[1] < this.y + this.h; }
+  inflate(dx, dy) { return new Rect(this.x - dx / 2, this.y - dy / 2, this.w + dx, this.h + dy); }
+  static centered(cx, cy, w, h) { return new Rect(cx - w / 2, cy - h / 2, w, h); }
+}
+
+let ctx = null;        // main 2D context (logical units via transform)
+let PX = 1;            // device pixels per logical unit
+
+function roundRectPath(c, x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r);
+  c.closePath();
+}
+function fillRounded(color, rect, r = 0, width = 0, alpha = 1) {
+  if (width) {
+    roundRectPath(ctx, rect.x + width / 2, rect.y + width / 2, rect.w - width, rect.h - width, Math.max(0, r - width / 2));
+    ctx.strokeStyle = css(color, alpha); ctx.lineWidth = width; ctx.stroke();
+  } else {
+    roundRectPath(ctx, rect.x, rect.y, rect.w, rect.h, r);
+    ctx.fillStyle = css(color, alpha); ctx.fill();
+  }
+}
+/* Soft drop shadow only (shape drawn off-canvas, shadow offset back on). */
+function drawShadow(rect, r = 10, blur = 16, alpha = 120, offset = [0, 6]) {
+  const far = 4000;
+  ctx.save();
+  ctx.shadowColor = `rgba(0,0,0,${alpha / 255})`;
+  ctx.shadowBlur = blur * PX;
+  ctx.shadowOffsetX = (far + offset[0]) * PX;
+  ctx.shadowOffsetY = offset[1] * PX;
+  roundRectPath(ctx, rect.x - far, rect.y, rect.w, rect.h, r);
+  ctx.fillStyle = "#000"; ctx.fill();
+  ctx.restore();
+}
+const font = (size, bold = false) => `${bold ? 700 : 500} ${size}px ${FONT_STACK}`;
+function textWidth(text, f) { ctx.font = f; return ctx.measureText(text).width; }
+/* anchor: topleft, midleft, bottomleft, midtop, center, midbottom, topright, midright, bottomright */
+function blitText(text, f, color, anchor, x, y, alpha = 1) {
+  ctx.font = f;
+  const size = parseFloat(f.split(" ")[1]);
+  const w = ctx.measureText(text).width, h = size * 1.25;
+  let left = x, top = y;
+  if (anchor.includes("right")) left = x - w;
+  else if (anchor.startsWith("mid") && !anchor.endsWith("left") && !anchor.endsWith("right") || anchor === "center") left = x - w / 2;
+  if (anchor === "midleft" || anchor === "midright" || anchor === "center") top = y - h / 2;
+  else if (anchor.startsWith("bottom") || anchor === "midbottom") top = y - h;
+  ctx.fillStyle = css(color, alpha);
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  ctx.fillText(text, left, top + h / 2 + size * 0.04);
+  return new Rect(left, top, w, h);
+}
+function truncate(text, f, maxW) {
+  if (textWidth(text, f) <= maxW) return text;
+  while (text && textWidth(text + "...", f) > maxW) text = text.slice(0, -1);
+  return text.trimEnd() + "...";
+}
+function spacedWidth(text, f, spacing) {
+  let w = 0;
+  for (const ch of text) w += textWidth(ch, f);
+  return w + spacing * (text.length - 1);
+}
+function drawSpaced(text, f, color, spacing, cx, top, alpha = 1, align = "center") {
+  let x = align === "center" ? cx - spacedWidth(text, f, spacing) / 2 : cx;
+  for (const ch of text) {
+    const r = blitText(ch, f, color, "topleft", x, top, alpha);
+    x += r.w + spacing;
+  }
+}
+const squareRect = (s) => new Rect(colOf(s) * SQ, BOARD_Y + rowOf(s) * SQ, SQ, SQ);
+function squareAt(p) {
+  if (!p) return null;
+  const col = Math.floor(p[0] / SQ), row = Math.floor((p[1] - BOARD_Y) / SQ);
+  return row >= 0 && row < 8 && col >= 0 && col < 8 && p[0] >= 0 ? sqOf(row, col) : null;
+}
+
+/* ================================================================ pieces */
+function cubic(p0, p1, p2, p3, n = 14) {
+  const out = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n, a = (1 - t) ** 3, b = 3 * (1 - t) ** 2 * t, c = 3 * (1 - t) * t * t, d = t ** 3;
+    out.push([a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0], a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1]]);
+  }
+  return out;
+}
+function quad(p0, p1, p2, n = 12) {
+  const out = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n, a = (1 - t) ** 2, b = 2 * (1 - t) * t, c = t * t;
+    out.push([a * p0[0] + b * p1[0] + c * p2[0], a * p0[1] + b * p1[1] + c * p2[1]]);
+  }
+  return out;
+}
+function catmullRom(pts, samples = 6, closed = true) {
+  const n = pts.length, out = [], segs = closed ? n : n - 1;
+  for (let i = 0; i < segs; i++) {
+    const p0 = closed ? pts[(i - 1 + n) % n] : pts[Math.max(i - 1, 0)];
+    const p1 = pts[i];
+    const p2 = closed ? pts[(i + 1) % n] : pts[Math.min(i + 1, n - 1)];
+    const p3 = closed ? pts[(i + 2) % n] : pts[Math.min(i + 2, n - 1)];
+    for (let s = 0; s < samples; s++) {
+      const t = s / samples, t2 = t * t, t3 = t2 * t;
+      out.push([0, 1].map((k) => 0.5 * (2 * p1[k] + (-p0[k] + p2[k]) * t +
+        (2 * p0[k] - 5 * p1[k] + 4 * p2[k] - p3[k]) * t2 + (-p0[k] + 3 * p1[k] - 3 * p2[k] + p3[k]) * t3)));
+    }
+  }
+  if (!closed) out.push(pts[n - 1]);
+  return out;
+}
+const base = (ring = [24, 74, 52, 8], foot = [18, 82, 64, 9]) =>
+  [{ t: "rrect", rect: ring, r: 3 }, { t: "rrect", rect: foot, r: 3.5 }];
+
+const PIECE_SHAPES = (() => {
+  const s = {};
+  const pawnBody = [[42.5, 40]].concat(cubic([42.5, 40], [43, 57], [36, 66], [27, 76]), cubic([73, 76], [64, 66], [57, 57], [57.5, 40]));
+  s.P = [{ t: "poly", pts: pawnBody }, { t: "circle", c: [50, 25], r: 12.5 },
+    { t: "rrect", rect: [33, 36, 34, 7.5], r: 3.5 }, ...base([25, 74, 50, 8], [20, 82, 60, 9])];
+  s.R = [{ t: "poly", pts: [[32, 38], [68, 38], [71.5, 76], [28.5, 76]] },
+    { t: "poly", pts: [[25, 33], [25, 13], [35.5, 13], [35.5, 20.5], [44.5, 20.5], [44.5, 13], [55.5, 13],
+      [55.5, 20.5], [64.5, 20.5], [64.5, 13], [75, 13], [75, 33]] },
+    { t: "rrect", rect: [26, 31, 48, 8], r: 2.5, hl: false }, ...base()];
+  const mitre = cubic([50, 15], [35, 25], [25.5, 45], [36.5, 62]).concat(cubic([63.5, 62], [74.5, 45], [65, 25], [50, 15]));
+  s.B = [{ t: "circle", c: [50, 11], r: 5 }, { t: "poly", pts: mitre },
+    { t: "cut", pts: [[57.5, 23.5], [61.5, 27.5], [51.5, 44.5], [47.5, 41.5]] },
+    { t: "poly", pts: [[39, 66], [61, 66], [66.5, 76], [33.5, 76]] },
+    { t: "rrect", rect: [33, 59, 34, 8], r: 3.5, hl: false }, ...base()];
+  s.Q = [{ t: "poly", pts: [[31, 70], [18, 31], [30, 45], [34, 24], [43, 41.5], [50, 19], [57, 41.5], [66, 24], [70, 45], [82, 31], [69, 70]] },
+    { t: "line", pts: [[26.5, 57], [73.5, 57]], w: 0.7 },
+    { t: "circle", c: [18, 29.5], r: 4.2 }, { t: "circle", c: [34, 22], r: 4.2 }, { t: "circle", c: [50, 16.5], r: 4.8 },
+    { t: "circle", c: [66, 22], r: 4.2 }, { t: "circle", c: [82, 29.5], r: 4.2 },
+    { t: "rrect", rect: [28, 65, 44, 8.5], r: 3.5, hl: false }, ...base()];
+  const kingBody = cubic([32, 68], [20, 57], [13, 37], [30, 31]).concat(quad([30, 31], [50, 22.5], [70, 31]), cubic([70, 31], [87, 37], [80, 57], [68, 68]));
+  s.K = [{ t: "rrect", rect: [46, 3.5, 8, 22], r: 2, hl: false },
+    { t: "rrect", rect: [39, 9, 22, 7.5], r: 2, hl: false, shade: false },
+    { t: "poly", pts: kingBody },
+    { t: "line", pts: [[50, 27], [50, 64]], w: 0.7 }, { t: "line", pts: [[39.5, 30], [41.5, 64]], w: 0.7 },
+    { t: "line", pts: [[60.5, 30], [58.5, 64]], w: 0.7 },
+    { t: "rrect", rect: [27, 64, 46, 9], r: 3.5, hl: false }, ...base()];
+  const knight = catmullRom([[30, 76], [27, 62], [25.5, 48], [27.5, 36], [32, 26], [36, 17.5], [39.5, 8.5],
+    [44.5, 14.5], [53, 14.5], [62.5, 18.5], [70.5, 25], [77.5, 32], [81.5, 38], [80, 44], [74, 46.5],
+    [66, 44.5], [59, 44.5], [55.5, 49.5], [60.5, 58.5], [67, 67], [70, 76]], 6, true);
+  s.N = [{ t: "poly", pts: knight },
+    { t: "line", pts: catmullRom([[41, 18.5], [35, 29], [32.5, 43], [33, 58]], 6, false), w: 0.75 },
+    { t: "dot", rect: [56.5, 24.5, 6, 3.6] }, { t: "dot", rect: [75, 36.2, 3, 2.4] },
+    { t: "line", pts: [[73.5, 42.8], [78.5, 41.8]], w: 0.6 }, ...base()];
+  return s;
+})();
+
+function compBBox(comp) {
+  if (comp.t === "circle") return [comp.c[0] - comp.r, comp.c[1] - comp.r, comp.r * 2, comp.r * 2];
+  if (comp.t === "rrect") return comp.rect;
+  const xs = comp.pts.map((p) => p[0]), ys = comp.pts.map((p) => p[1]);
+  const x = Math.min(...xs), y = Math.min(...ys);
+  return [x, y, Math.max(...xs) - x, Math.max(...ys) - y];
+}
+const SHADE_LINES = {};
+function shadeLine(kind) {
+  if (!(kind in SHADE_LINES)) {
+    const xs = [];
+    for (const c of PIECE_SHAPES[kind]) if (["poly", "circle", "rrect"].includes(c.t)) { const b = compBBox(c); xs.push(b[0], b[0] + b[2]); }
+    SHADE_LINES[kind] = Math.min(...xs) + (Math.max(...xs) - Math.min(...xs)) * 0.6;
+  }
+  return SHADE_LINES[kind];
+}
+function compPath(c, comp) {
+  c.beginPath();
+  if (comp.t === "circle") c.arc(comp.c[0], comp.c[1], comp.r, 0, Math.PI * 2);
+  else if (comp.t === "rrect") { const [x, y, w, h] = comp.rect; roundRectPath(c, x, y, w, h, comp.r || 0); }
+  else { comp.pts.forEach((p, i) => (i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1]))); c.closePath(); }
+}
+function renderPiece(kind, pal, size) {
+  const px = Math.max(1, Math.round(size * PX));
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = px;
+  const c = cv.getContext("2d");
+  const k = px / 100;
+  c.scale(k, k);
+  c.lineJoin = "round"; c.lineCap = "round";
+  const boost = size >= 48 ? 1 : Math.min(2.2, (48 / Math.max(size, 1)) ** 0.6);
+  const ow = 2.5 * boost;
+  const gradient = Array.isArray(pal.fill[0]);
+  let fillStyle;
+  if (gradient) { fillStyle = c.createLinearGradient(0, 10, 0, 92); fillStyle.addColorStop(0, css(pal.fill[0])); fillStyle.addColorStop(1, css(pal.fill[1])); }
+  else fillStyle = css(pal.fill);
+  const detail = pal.outline || pal.shade || [0, 0, 0];
+  const shadeX = shadeLine(kind);
+  for (const comp of PIECE_SHAPES[kind]) {
+    if (comp.t === "line") {
+      c.beginPath(); comp.pts.forEach((p, i) => (i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1])));
+      c.strokeStyle = css(detail); c.lineWidth = Math.max(1 / k, ow * (comp.w || 0.8)); c.stroke();
+      continue;
+    }
+    if (comp.t === "dot") {
+      const [x, y, w, h] = comp.rect;
+      c.beginPath(); c.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+      c.fillStyle = css(detail); c.fill();
+      continue;
+    }
+    if (comp.t === "cut") {
+      compPath(c, comp);
+      c.save(); c.globalCompositeOperation = "destination-out"; c.fill(); c.restore();
+      if (pal.outline) { compPath(c, comp); c.strokeStyle = css(pal.outline); c.lineWidth = ow * 0.8; c.stroke(); }
+      continue;
+    }
+    const [bx, by, bw, bh] = compBBox(comp);
+    compPath(c, comp);
+    c.fillStyle = fillStyle; c.fill();
+    c.save();
+    compPath(c, comp); c.clip();
+    if (pal.shade && comp.shade !== false) {
+      const x0 = Math.max(shadeX, bx + bw * 0.5);
+      c.fillStyle = css(pal.shade); c.fillRect(x0, 0, 100 - x0, 100);
+    }
+    if (pal.highlight && comp.hl !== false && bh >= 14) {
+      const hw = Math.max(2 / k, bw * 0.1), hh = bh * 0.5, hx = bx + bw * 0.17, hy = by + bh * 0.16;
+      c.beginPath(); c.ellipse(hx + hw / 2, hy + hh / 2, hw / 2, hh / 2, 0, 0, Math.PI * 2);
+      c.fillStyle = css(pal.highlight); c.fill();
+    }
+    c.restore();
+    if (pal.outline) {
+      compPath(c, comp);
+      c.strokeStyle = css(pal.outline);
+      c.lineWidth = comp.t === "poly" ? ow : ow * 0.85;
+      c.stroke();
+    }
+  }
+  return cv;
+}
+const pieceCache = new Map();
+function pieceImage(kind, palette, size) {
+  const key = `${kind}|${palette}|${size}`;
+  let img = pieceCache.get(key);
+  if (!img) { img = renderPiece(kind, PALETTES[palette], size); pieceCache.set(key, img); }
+  return img;
+}
+function drawPiece(kind, palette, size, x, y, alpha = 1, scale = 1) {
+  const img = pieceImage(kind, palette, size);
+  if (alpha < 1) { ctx.save(); ctx.globalAlpha = alpha; }
+  ctx.drawImage(img, x, y, size * scale, size * scale);
+  if (alpha < 1) ctx.restore();
+}
+const drawPieceCentered = (kind, palette, size, cx, cy) => drawPiece(kind, palette, size, cx - size / 2, cy - size / 2);
+const PREWARM = [];
+for (const p of ["white", "black"]) for (const k of "PNBRQK") PREWARM.push([k, p, SQ]);
+for (const p of ["white", "captured_black"]) for (const k of "PNBRQ") PREWARM.push([k, p, 22]);
+for (const p of ["strip_hollow", "strip_solid"]) for (const k of "NBRQK") PREWARM.push([k, p, 20]);
+PREWARM.push(["P", "avatar", 42], ["P", "white", 30], ["K", "white", 54], ["K", "black", 54]);
+let prewarmQueue = PREWARM.slice();
+function prewarmStep(budgetMs = 6) {
+  const end = performance.now() + budgetMs;
+  while (prewarmQueue.length && performance.now() < end) pieceImage(...prewarmQueue.pop());
+  return !prewarmQueue.length;
+}
+
+/* ================================================================= icons */
+function drawIcon(name, cx, cy, size, color, params = {}) {
+  const u = size / 24, col = css(color);
+  ctx.save();
+  ctx.translate(cx - size / 2, cy - size / 2);
+  ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  const line = (pts, w) => {
+    ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x * u, y * u) : ctx.moveTo(x * u, y * u)));
+    ctx.lineWidth = w * u; ctx.stroke();
+  };
+  const poly = (pts) => { ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x * u, y * u) : ctx.moveTo(x * u, y * u))); ctx.closePath(); ctx.fill(); };
+  switch (name) {
+    case "back": line([[11, 6], [5, 12], [11, 18]], 2.4); line([[5, 12], [20, 12]], 2.4); break;
+    case "flag": line([[6, 3.5], [6, 21]], 2.2); poly([[6, 4], [19, 4], [16, 8.5], [19, 13], [6, 13]]); break;
+    case "speaker":
+      poly([[3, 9], [7, 9], [12, 4.5], [12, 19.5], [7, 15], [3, 15]]);
+      if (params.muted) { line([[15.5, 9], [21, 14.5]], 2); line([[21, 9], [15.5, 14.5]], 2); }
+      else {
+        ctx.lineWidth = 2 * u; ctx.lineCap = "butt";
+        ctx.beginPath(); ctx.arc(12 * u, 12 * u, 3.5 * u, -0.9, 0.9); ctx.stroke();
+        ctx.beginPath(); ctx.arc(12 * u, 12 * u, 7.5 * u, -0.85, 0.85); ctx.stroke();
+      }
+      break;
+    case "swap":
+      line([[4, 8], [19, 8]], 2.2); line([[15, 4.2], [19, 8], [15, 11.8]], 2.2);
+      line([[20, 16], [5, 16]], 2.2); line([[9, 12.2], [5, 16], [9, 19.8]], 2.2); break;
+    case "close": line([[6, 6], [18, 18]], 2.4); line([[18, 6], [6, 18]], 2.4); break;
+    case "list":
+      for (const y of [6, 12, 18]) { ctx.beginPath(); ctx.arc(5 * u, y * u, 1.6 * u, 0, 7); ctx.fill(); line([[9, y], [20, y]], 2.2); }
+      break;
+    case "trash":
+      line([[3.5, 6.5], [20.5, 6.5]], 2); line([[9.5, 6.5], [9.5, 3.5], [14.5, 3.5], [14.5, 6.5]], 2);
+      line([[6, 9], [7.2, 20.5], [16.8, 20.5], [18, 9]], 2); line([[10, 11.5], [10, 17.5]], 1.7); line([[14, 11.5], [14, 17.5]], 1.7);
+      break;
+    case "clock": {
+      const rad = ((params.angle || 0) - 90) * Math.PI / 180;
+      const tip = [12 + Math.cos(rad) * 6.5, 12 + Math.sin(rad) * 6.5];
+      if (params.filled) {
+        ctx.beginPath(); ctx.arc(12 * u, 12 * u, 10 * u, 0, 7); ctx.fill();
+        ctx.strokeStyle = css(params.hand || [0, 0, 0]);
+        line([[12, 12], tip], 2);
+      } else {
+        ctx.lineWidth = 2 * u; ctx.beginPath(); ctx.arc(12 * u, 12 * u, 9 * u, 0, 7); ctx.stroke();
+        line([[12, 12], tip], 2); line([[12, 12], [16, 12]], 2);
+      }
+      break;
+    }
+    case "half":
+      ctx.font = font(Math.round(size * 0.78), true); ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("½", 12 * u, 12.5 * u); break;
+  }
+  ctx.restore();
+}
+function drawMiniBoard(x, y, size) {
+  ctx.save();
+  roundRectPath(ctx, x, y, size, size, size * 0.16); ctx.clip();
+  const cell = size / 4;
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) {
+    ctx.fillStyle = css((r + c) % 2 === 0 ? C.LIGHT : C.DARK);
+    ctx.fillRect(x + c * cell, y + r * cell, cell + 0.5, cell + 0.5);
+  }
+  ctx.restore();
+  fillRounded(C.BG_DEEP, new Rect(x, y, size, size), size * 0.16, size * 0.05);
+}
+
+/* ================================================================= sound */
+function mulberry32(seed) {
+  return () => { seed |= 0; seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+function makeSynth(RATE) {
+  const TAU = Math.PI * 2;
+  const mixIn = (dst, src, off = 0, gain = 1) => {
+    const start = Math.floor(off * RATE);
+    while (dst.length < start + src.length) dst.push(0);
+    for (let i = 0; i < src.length; i++) dst[start + i] += src[i] * gain;
+    return dst;
+  };
+  const normalize = (s, peak = 0.85) => { const top = s.reduce((m, v) => Math.max(m, Math.abs(v)), 0); return top < 1e-9 ? s : s.map((v) => v * peak / top); };
+  const fadeTail = (s, sec = 0.01) => { const n = Math.min(s.length, Math.floor(sec * RATE)); for (let i = 0; i < n; i++) s[s.length - 1 - i] *= i / n; return s; };
+  const knock = (hz, decay = 0.035, click = 0.9, dur = 0.16, seed = 1) => {
+    const rnd = mulberry32(seed * 7919), out = []; let lp = 0;
+    const n = Math.floor(dur * RATE);
+    for (let i = 0; i < n; i++) {
+      const t = i / RATE, attack = Math.min(1, t / 0.0012);
+      const body = Math.sin(TAU * hz * t) * 0.65 + Math.sin(TAU * hz * 2.31 * t) * 0.28 * Math.exp(-t / (decay * 0.55)) +
+        Math.sin(TAU * hz * 4.07 * t) * 0.12 * Math.exp(-t / (decay * 0.3));
+      lp += 0.35 * ((rnd() * 2 - 1) - lp);
+      out.push(attack * (body * Math.exp(-t / decay) + click * lp * Math.exp(-t / 0.006)));
+    }
+    return fadeTail(out);
+  };
+  const bell = (f, dur = 0.3, decay = 0.12, atk = 0.004) => {
+    const out = [], n = Math.floor(dur * RATE);
+    for (let i = 0; i < n; i++) {
+      const t = i / RATE, env = Math.min(1, t / atk) * Math.exp(-t / decay);
+      out.push(env * (Math.sin(TAU * f * t) + 0.35 * Math.sin(TAU * f * 2 * t) * Math.exp(-t / (decay * 0.5)) +
+        0.12 * Math.sin(TAU * f * 3.01 * t) * Math.exp(-t / (decay * 0.3))));
+    }
+    return fadeTail(out);
+  };
+  return {
+    move: () => normalize(mixIn(knock(185, 0.032, 0.8, 0.16, 3), knock(92, 0.05, 0, 0.16, 4), 0, 0.35), 0.7),
+    capture: () => normalize(mixIn(knock(240, 0.026, 1.25, 0.12, 7), knock(330, 0.03, 1, 0.16, 8), 0.038, 0.9), 0.85),
+    castle: () => normalize(mixIn(knock(180, 0.03, 0.8, 0.16, 11), knock(205, 0.03, 0.8, 0.16, 12), 0.11, 0.9), 0.75),
+    check: () => { const o = knock(200, 0.03, 0.9, 0.16, 21); mixIn(o, bell(880, 0.32, 0.11), 0.015, 0.45); mixIn(o, bell(1318.5, 0.28, 0.08), 0.015, 0.22); return normalize(o, 0.8); },
+    promote: () => { const o = knock(190, 0.03, 0.8, 0.16, 31); [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => mixIn(o, bell(f, 0.3, 0.1), 0.03 + i * 0.065, 0.42)); return normalize(o, 0.8); },
+    game_start: () => normalize(mixIn(bell(392, 0.45, 0.2, 0.012), bell(587.33, 0.55, 0.24, 0.012), 0.12, 0.9), 0.6),
+    game_end: () => { const o = []; [659.25, 523.25, 392].forEach((f, i) => mixIn(o, bell(f, 0.6, 0.22, 0.01), i * 0.15, 0.8)); mixIn(o, bell(261.63, 0.9, 0.35, 0.02), 0.45, 0.6); return normalize(o, 0.65); },
+  };
+}
+class SoundManager {
+  constructor() {
+    this.actx = null; this.buffers = {};
+    this.muted = false;
+    try { this.muted = localStorage.getItem("classical-chess.muted") === "1"; } catch (e) {}
+  }
+  unlock() {
+    if (this.actx) { if (this.actx.state === "suspended") this.actx.resume().catch(() => {}); return; }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    try {
+      this.actx = new AC();
+      this.gain = this.actx.createGain(); this.gain.gain.value = 0.7; this.gain.connect(this.actx.destination);
+      const synth = makeSynth(this.actx.sampleRate);
+      for (const [name, fn] of Object.entries(synth)) {
+        const data = fn();
+        const buf = this.actx.createBuffer(1, data.length, this.actx.sampleRate);
+        buf.getChannelData(0).set(data);
+        this.buffers[name] = buf;
+      }
+    } catch (e) { this.actx = null; }
+  }
+  play(name) {
+    if (this.muted || !this.actx || !this.buffers[name]) return;
+    const src = this.actx.createBufferSource();
+    src.buffer = this.buffers[name]; src.connect(this.gain); src.start();
+  }
+  toggleMute() {
+    this.muted = !this.muted;
+    try { localStorage.setItem("classical-chess.muted", this.muted ? "1" : "0"); } catch (e) {}
+    return this.muted;
+  }
+}
+
+/* ============================================================== history */
+/* Signed-in viewers: their own private rows in the artifact's database.
+   Everyone else: this browser's local storage. */
+class HistoryStore {
+  constructor() {
+    this.mode = "loading";     // loading | cloud | local
+    this.coll = null;
+    this.ready = this._init();
+  }
+  async _init() {
+    try {
+      const claude = window.claude;
+      if (claude && typeof claude.use === "function") {
+        const [db, user] = await Promise.all([claude.use("db"), claude.use("user")]);
+        const uid = db && user ? await user.id() : null;
+        if (uid) { this.coll = db.collection("data/users/" + uid); this.mode = "cloud"; return; }
+      }
+    } catch (e) { /* fall through to local */ }
+    this.mode = "local";
+  }
+  _readLocal() {
+    try { const v = JSON.parse(localStorage.getItem("classical-chess.history") || "[]"); return Array.isArray(v) ? v : []; }
+    catch (e) { return []; }
+  }
+  _writeLocal(list) { try { localStorage.setItem("classical-chess.history", JSON.stringify(list.slice(0, MAX_HISTORY))); } catch (e) {} }
+  _timeout(p, ms = 10000) { return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej({ code: "timeout" }), ms))]); }
+  async load() {
+    await this.ready;
+    if (this.mode === "cloud") {
+      try {
+        const snap = await this._timeout(this.coll.orderBy("timestamp", "desc").limit(MAX_HISTORY).get());
+        return snap.docs.map((d) => d.data()).filter((m) => m && typeof m.timestamp === "number");
+      } catch (e) { this.mode = "local"; }
+    }
+    return this._readLocal().sort((a, b) => b.timestamp - a.timestamp);
+  }
+  async save(record) {
+    await this.ready;
+    if (this.mode === "cloud") {
+      try { await this.coll.doc(record.id).set(record); return; } catch (e) { this.mode = "local"; }
+    }
+    const list = this._readLocal(); list.unshift(record); this._writeLocal(list);
+  }
+  async remove(id) {
+    await this.ready;
+    if (!id) return;
+    if (this.mode === "cloud") { try { await this.coll.doc(id).delete(); return; } catch (e) { this.mode = "local"; } }
+    this._writeLocal(this._readLocal().filter((m) => m.id !== id));
+  }
+  async clear(matches) {
+    await this.ready;
+    if (this.mode === "cloud") {
+      try { for (const m of matches) if (m.id) await this.coll.doc(m.id).delete(); return; } catch (e) { this.mode = "local"; }
+    }
+    this._writeLocal([]);
+  }
+}
+function newId() {
+  try { return crypto.randomUUID().replace(/-/g, ""); } catch (e) { return Date.now().toString(16) + Math.random().toString(16).slice(2); }
+}
+function buildMatchRecord(game, durationSeconds) {
+  const o = game.outcome;
+  return {
+    id: newId(), timestamp: Date.now() / 1000,
+    white: game.whiteName, black: game.blackName,
+    result: o ? o.result : "*",
+    winner: o && o.winner ? (o.winner === WHITE ? "white" : "black") : null,
+    reason: o ? o.status : "ongoing", reason_text: game.resultReason(), headline: game.resultHeadline(),
+    move_count: game.fullmoveCount(), ply_count: game.history.length, moves: game.sanList(),
+    final_fen: game.fen(), duration_seconds: durationSeconds ? Math.round(durationSeconds * 10) / 10 : null,
+  };
+}
+
+/* =============================================================== widgets */
+const BUTTON_STYLES = {
+  primary: [C.BTN_PRIMARY, C.BTN_PRIMARY_HOVER, C.BTN_PRIMARY_EDGE, C.TEXT],
+  secondary: [C.BTN_SECONDARY, C.BTN_SECONDARY_HOVER, C.BTN_SECONDARY_EDGE, C.TEXT],
+  danger: [C.BTN_DANGER, C.BTN_DANGER_HOVER, C.BTN_DANGER_EDGE, C.TEXT],
+};
+class Button {
+  constructor(rect, text, style = "primary", fontSize = 22, icon = null, radius = 10) {
+    Object.assign(this, { rect, text, style, fontSize, icon, radius, enabled: true, pressed: false });
+  }
+  handle(ev) {
+    if (!this.enabled) return false;
+    if (ev.type === "down" && ev.button === 0) { if (this.rect.contains(ev.pos)) this.pressed = true; }
+    else if (ev.type === "up" && ev.button === 0) { const was = this.pressed; this.pressed = false; return was && this.rect.contains(ev.pos); }
+    return false;
+  }
+  draw(app) {
+    let [baseC, hoverC, edge, textC] = BUTTON_STYLES[this.style];
+    const hover = this.enabled && this.rect.contains(app.mouse);
+    const pressed = this.pressed && this.rect.contains(app.mouse);
+    if (hover) app.handCursor = true;
+    let face = hover ? hoverC : baseC;
+    if (!this.enabled) { face = mix(baseC, C.BG_MAIN, 0.5); textC = C.TEXT_MUTED; }
+    const r = this.rect, E = 4;
+    fillRounded(edge, new Rect(r.x, r.y + E, r.w, r.h - E), this.radius);
+    const faceRect = new Rect(r.x, r.y + (pressed ? 3 : 0), r.w, r.h - E);
+    fillRounded(face, faceRect, this.radius);
+    const f = font(this.fontSize, true);
+    const iconW = this.icon ? 30 : 0;
+    const total = iconW + textWidth(this.text, f);
+    const x = faceRect.cx - total / 2;
+    if (this.icon) this.icon(x + 12, faceRect.cy, textC);
+    blitText(this.text, f, textC, "midleft", x + iconW, faceRect.cy);
+  }
+}
+class IconButton {
+  constructor(rect, icon, tooltip = "", params = {}) {
+    Object.assign(this, { rect, icon, tooltip, params, enabled: true, visible: true, pressed: false });
+  }
+  handle(ev) {
+    if (!this.enabled || !this.visible) return false;
+    if (ev.type === "down" && ev.button === 0) { if (this.rect.contains(ev.pos)) this.pressed = true; }
+    else if (ev.type === "up" && ev.button === 0) { const was = this.pressed; this.pressed = false; return was && this.rect.contains(ev.pos); }
+    return false;
+  }
+  hovered(app) { return this.visible && this.enabled && this.rect.contains(app.mouse); }
+  draw(app, color = C.TEXT_2, size = 24) {
+    if (!this.visible) return;
+    if (this.hovered(app)) { app.handCursor = true; fillRounded(C.BG_RAISED, this.rect, 8); color = C.TEXT; }
+    if (!this.enabled) color = mix(color, C.BG_SURFACE, 0.6);
+    drawIcon(this.icon, this.rect.cx, this.rect.cy, size, color, this.params);
+  }
+  drawTooltip(app) {
+    if (!this.tooltip || !this.hovered(app) || app.pointerType !== "mouse") return;
+    const f = font(14, true), w = textWidth(this.tooltip, f) + 16, h = 28;
+    let box = new Rect(this.rect.cx - w / 2, this.rect.bottom + 6, w, h);
+    if (box.right > W - 6) box.x = W - 6 - w;
+    if (box.x < 6) box.x = 6;
+    drawShadow(box, 6, 8, 120, [0, 3]);
+    fillRounded(C.BG_DEEP, box, 6);
+    blitText(this.tooltip, f, C.TEXT, "center", box.cx, box.cy);
+  }
+}
+class ConfirmDialog {
+  constructor(title, lines, confirmText, onConfirm, cancelText = "Cancel", onCancel = null, confirmStyle = "primary") {
+    Object.assign(this, { title, lines, onConfirm, onCancel });
+    const w = 456, h = 150 + 26 * lines.length;
+    this.rect = Rect.centered(W / 2, BOARD_Y + BOARD / 2, w, h);
+    const bw = (w - 48 - 12) / 2, by = this.rect.bottom - 24 - 52;
+    this.cancelBtn = new Button(new Rect(this.rect.x + 24, by, bw, 52), cancelText, "secondary", 19);
+    this.confirmBtn = new Button(new Rect(this.rect.x + 24 + bw + 12, by, bw, 52), confirmText, confirmStyle, 19);
+  }
+  handle(ev) {
+    if (ev.type === "key") {
+      if (ev.key === "Escape") { this.onCancel && this.onCancel(); return true; }
+      if (ev.key === "Enter") { this.onConfirm(); return true; }
+    }
+    if (this.confirmBtn.handle(ev)) { this.onConfirm(); return true; }
+    if (this.cancelBtn.handle(ev)) { this.onCancel && this.onCancel(); return true; }
+    return false;
+  }
+  draw(app) {
+    ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(0, 0, W, H);
+    drawShadow(this.rect, 14, 22, 170, [0, 10]);
+    fillRounded(C.BG_SURFACE, this.rect, 14);
+    blitText(this.title, font(25, true), C.TEXT, "midtop", this.rect.cx, this.rect.y + 26);
+    this.lines.forEach((l, i) => blitText(l, font(17), C.TEXT_2, "midtop", this.rect.cx, this.rect.y + 70 + i * 26));
+    this.cancelBtn.draw(app);
+    this.confirmBtn.draw(app);
+  }
+}
+function drawHeader(app, title, backBtn) {
+  ctx.fillStyle = css(C.BG_SURFACE); ctx.fillRect(0, 0, W, HEADER_H);
+  ctx.fillStyle = css(C.BG_DEEP); ctx.fillRect(0, HEADER_H - 1, W, 1);
+  let x = 16;
+  if (backBtn) { backBtn.draw(app, C.TEXT_2, 26); x = backBtn.rect.right + 8; }
+  drawMiniBoard(x, HEADER_H / 2 - 14, 28);
+  blitText(title, font(24, true), C.TEXT, "midleft", x + 40, HEADER_H / 2);
+}
+
+/* =============================================================== screens */
+class Screen {
+  constructor(app) { this.app = app; }
+  enter() {} exit() {} handle() {} update() {} draw() {}
+}
+
+/* Opening animation: the pawn pops up, the knight and rook slide out from behind it,
+   then the wordmark fades in. Any key or click skips it. */
+const SPLASH_DURATION = 2.5;
+class SplashScreen extends Screen {
+  constructor(app) {
+    super(app);
+    this.t = REDUCED_MOTION ? 1.7 : 0;   // reduced motion: show the finished picture briefly
+    this.done = false;
+  }
+  handle(ev) {
+    if ((ev.type === "down" || ev.type === "key") && this.t > 0.3) this.t = Math.max(this.t, SPLASH_DURATION);
+  }
+  update(dt) {
+    this.t += dt;
+    if (this.t >= SPLASH_DURATION && !this.done) { this.done = true; this.app.go("HOME"); }
+  }
+  piece(kind, palette, size, scale, x, bottom, alpha, flip = false) {
+    if (scale <= 0.01 || alpha <= 0) return;
+    const img = pieceImage(kind, palette, size), s = size * scale;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(x, bottom);
+    if (flip) ctx.scale(-1, 1);
+    ctx.drawImage(img, -s / 2, -s, s, s);
+    ctx.restore();
+  }
+  draw() {
+    ctx.fillStyle = css(C.BG_MAIN); ctx.fillRect(0, 0, W, H);
+    const t = this.t, cx = W / 2, baseY = Math.floor(H / 2) + 96;
+
+    const grow = easeOutCubic(t / 1.2);
+    if (grow > 0) drawShadow(Rect.centered(cx, baseY - 6, 300 * grow + 1, 30 * grow + 1), 15 * grow, 18, 110 * grow, [0, 0]);
+
+    const side = easeOutCubic((t - 0.45) / 0.8), sideAlpha = clamp((t - 0.4) / 0.35), off = 92 * side;
+    this.piece("N", "splash_dark", 210, lerp(0.8, 1, side), cx - off - 8, baseY - 26, sideAlpha, true);
+    this.piece("R", "splash_dark", 200, lerp(0.8, 1, side), cx + off + 10, baseY - 24, sideAlpha);
+
+    this.piece("P", "splash_pawn", 260, lerp(0.35, 1, easeOutBack(t / 0.75)), cx, baseY + 6, clamp(t / 0.3));
+
+    const wa = easeInOut((t - 1.0) / 0.6);
+    if (wa > 0) drawSpaced("CLASSICAL CHESS", font(22, true), C.LIGHT, 6, cx, baseY + 40, wa);
+  }
+}
+
+class HomeScreen extends Screen {
+  constructor(app) {
+    super(app);
+    const bw = 380, bh = 66, x = (W - bw) / 2;
+    this.playBtn = new Button(new Rect(x, 520, bw, bh), "Play Game", "primary", 24,
+      (cx, cy) => drawPieceCentered("P", "white", 30, cx, cy));
+    this.historyBtn = new Button(new Rect(x, 604, bw, bh), "Match History", "secondary", 22,
+      (cx, cy, col) => drawIcon("list", cx, cy, 22, col));
+    this.soundBtn = new Button(new Rect(x, 688, bw, bh), "", "secondary", 22,
+      (cx, cy, col) => drawIcon("speaker", cx, cy, 22, col, { muted: this.app.sound.muted }));
+  }
+  handle(ev) {
+    if (this.playBtn.handle(ev)) this.app.go("SETUP");
+    else if (this.historyBtn.handle(ev)) this.app.go("HISTORY");
+    else if (this.soundBtn.handle(ev)) { if (!this.app.sound.toggleMute()) this.app.sound.play("move"); }
+    else if (ev.type === "key") {
+      if (ev.key === "Enter" || ev.key === " ") this.app.go("SETUP");
+      else if (ev.key.toLowerCase() === "h") this.app.go("HISTORY");
+    }
+  }
+  draw(app) {
+    ctx.fillStyle = css(C.BG_MAIN); ctx.fillRect(0, 0, W, H);
+    const s = 64, hero = Rect.centered(W / 2, 206, s * 4, s * 4);
+    drawShadow(hero, 14, 26, 170, [0, 14]);
+    ctx.save(); roundRectPath(ctx, hero.x, hero.y, hero.w, hero.h, 14); ctx.clip();
+    for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) {
+      ctx.fillStyle = css((r + c) % 2 === 0 ? C.LIGHT : C.DARK);
+      ctx.fillRect(hero.x + c * s, hero.y + r * s, s, s);
+    }
+    const layout = [[0, 0, "R", BLACK], [0, 3, "K", BLACK], [1, 1, "N", BLACK], [2, 2, "N", WHITE], [3, 0, "P", WHITE], [3, 3, "K", WHITE]];
+    for (const [r, c, k, side] of layout) drawPiece(k, paletteFor(side), s, hero.x + c * s, hero.y + r * s);
+    ctx.restore();
+    drawSpaced("CLASSICAL CHESS", font(40, true), C.LIGHT, 5, W / 2, 386);
+    blitText("Two players · One board · Every rule enforced", font(17), C.TEXT_MUTED, "midtop", W / 2, 450);
+    this.soundBtn.text = app.sound.muted ? "Sound Off" : "Sound On";
+    this.playBtn.draw(app); this.historyBtn.draw(app); this.soundBtn.draw(app);
+    blitText("v1.0.0  ·  10:00 Rapid", font(14), C.TEXT_MUTED, "midbottom", W / 2, H - 22);
+  }
+}
+
+class SetupScreen extends Screen {
+  constructor(app) {
+    super(app);
+    this.ROW_WHITE_Y = 168; this.ROW_BLACK_Y = 300; this.INPUT_X = 124;
+    this.backBtn = new IconButton(new Rect(8, 8, 40, 40), "back", "Back");
+    this.p1White = app.p1White;
+    this.y = [this.targetY(0), this.targetY(1)];
+    this.swapBtn = new Button(new Rect(W / 2 - 90, 246, 180, 44), "Swap Sides", "secondary", 17,
+      (cx, cy, col) => drawIcon("swap", cx, cy, 22, col), 22);
+    this.startBtn = new Button(new Rect(32, 552, W - 64, 68), "Start Match", "primary", 25);
+  }
+  targetY(i) { const white = i === 0 ? this.p1White : !this.p1White; return (white ? this.ROW_WHITE_Y : this.ROW_BLACK_Y) + 8; }
+  enter() {
+    const f = this.app.fields;
+    f.forEach((el, i) => { el.input.value = this.app.playerNames[i] || ""; el.wrap.hidden = false; });
+    this.syncFields();
+    if (this.app.pointerType === "mouse") setTimeout(() => f[0].input.focus({ preventScroll: true }), 30);
+  }
+  exit() { this.remember(); this.app.fields.forEach((el) => { el.input.blur(); el.wrap.hidden = true; }); }
+  remember() { this.app.playerNames = this.app.fields.map((el) => el.input.value.trim()); this.app.p1White = this.p1White; }
+  value(i) { return this.app.fields[i].input.value.split(/\s+/).filter(Boolean).join(" ") || `Player ${i + 1}`; }
+  start() {
+    this.remember();
+    const p1 = this.value(0), p2 = this.value(1);
+    const [white, black] = this.p1White ? [p1, p2] : [p2, p1];
+    this.app.go("GAME", { white, black });
+  }
+  handle(ev) {
+    if (this.backBtn.handle(ev)) return this.app.go("HOME");
+    if (this.swapBtn.handle(ev)) { this.p1White = !this.p1White; this.app.sound.play("move"); return; }
+    if (this.startBtn.handle(ev)) return this.start();
+    if (ev.type === "key") {
+      if (ev.key === "Escape") this.app.go("HOME");
+      else if (ev.key === "Enter") this.start();
+    }
+  }
+  syncFields() {
+    this.app.fields.forEach((el, i) => { el.wrap.style.top = Math.round(this.y[i]) + "px"; el.wrap.style.left = this.INPUT_X + "px"; el.wrap.style.width = (W - this.INPUT_X - 52) + "px"; });
+  }
+  update(dt) {
+    for (let i = 0; i < 2; i++) {
+      const t = this.targetY(i);
+      this.y[i] = lerp(this.y[i], t, clamp(dt * 14));
+      if (Math.abs(this.y[i] - t) < 0.5) this.y[i] = t;
+    }
+    this.syncFields();
+  }
+  drawRow(y, color) {
+    const tile = new Rect(52, y + 4, 60, 60);
+    fillRounded(color === WHITE ? C.LIGHT : C.DARK, tile, 8);
+    drawPieceCentered("K", paletteFor(color), 54, tile.cx, tile.cy);
+    blitText(COLOR_NAMES[color].toUpperCase(), font(13, true), C.TEXT_MUTED, "bottomleft", this.INPUT_X + 2, y + 4);
+  }
+  draw(app) {
+    ctx.fillStyle = css(C.BG_MAIN); ctx.fillRect(0, 0, W, H);
+    drawHeader(app, "New Match", this.backBtn);
+    fillRounded(C.BG_SURFACE, new Rect(32, 88, W - 64, 304), 14);
+    drawSpaced("PLAYERS", font(14, true), C.TEXT_MUTED, 3, 52, 106, 1, "left");
+    this.drawRow(this.ROW_WHITE_Y, WHITE);
+    this.drawRow(this.ROW_BLACK_Y, BLACK);
+    this.swapBtn.draw(app);
+
+    const pill = Rect.centered(W / 2, 440, 380, 44);
+    fillRounded(C.BG_DEEP, pill, 22);
+    fillRounded(C.BG_RAISED, pill, 22, 1);
+    const parts = [[font(17, true), "10:00 Rapid", C.TEXT], [font(17), "   |   ", C.TEXT_MUTED], [font(17, true), "Rule-Enforced", C.LIGHT]];
+    const total = 28 + parts.reduce((s, [f, t]) => s + textWidth(t, f), 0);
+    let x = pill.cx - total / 2;
+    drawIcon("clock", x + 10, pill.cy, 20, C.LIGHT, { angle: 60 });
+    x += 28;
+    for (const [f, t, c] of parts) x = blitText(t, f, c, "midleft", x, pill.cy).right;
+    ["Castling · En passant · Promotion · Checkmate · Stalemate",
+     "Threefold repetition · 50-move rule · Insufficient material"].forEach((l, i) =>
+      blitText(l, font(14), C.TEXT_MUTED, "midtop", W / 2, 478 + i * 22));
+    this.startBtn.draw(app);
+    blitText("Tab switches field  ·  Enter starts the match", font(14), C.TEXT_MUTED, "midtop", W / 2, 640);
+    this.backBtn.drawTooltip(app);
+  }
+}
+
+class GameScreen extends Screen {
+  constructor(app, opts = {}) {
+    super(app);
+    this.game = new Game(opts.white || "White", opts.black || "Black");
+    this.clock = new ChessClock(RAPID_SECONDS, 0);
+    this.selected = null; this.targets = new Set();
+    this.drag = null; this.anim = null; this.promotion = null; this.dialog = null;
+    this.resultModal = null; this.modalTimer = null; this.saved = false;
+    this.startedAt = Date.now();
+    this.tokens = []; this.tokensWidth = 0; this.tokensDirty = true;
+    this.scroll = 0; this.scrollTarget = 0; this.manualScroll = false; this.stripDrag = null;
+    this.backBtn = new IconButton(new Rect(8, 8, 40, 40), "back", "Leave match");
+    this.muteBtn = new IconButton(new Rect(W - 52, 8, 40, 40), "speaker", app.sound.muted ? "Unmute" : "Mute", { muted: app.sound.muted });
+    this.drawBtn = new IconButton(new Rect(W - 98, 8, 40, 40), "half", "Offer draw");
+    this.resignBtn = new IconButton(new Rect(W - 144, 8, 40, 40), "flag", "Resign");
+    this.resultBtn = new Button(new Rect(W - 168, 10, 108, 36), "Result", "secondary", 16, null, 8);
+    this.restore = opts.restore || null;
+  }
+  enter() {
+    if (this.restore) {
+      try {
+        for (const uci of this.restore.moves || []) {
+          const promo = uci.length === 5 ? uci[4].toUpperCase() : null;
+          this.game.makeMove(parseSquare(uci.slice(0, 2)), parseSquare(uci.slice(2, 4)), promo);
+        }
+        if (this.restore.times) Object.assign(this.clock.remaining, this.restore.times);
+      } catch (e) { this.game = new Game(this.game.whiteName, this.game.blackName); }
+      this.restore = null;
+      if (this.game.isOver) { this.saved = true; this.openResultModal(); return; }
+      this.clock.start(this.game.turn);
+      return;
+    }
+    this.clock.start(WHITE);
+    this.app.sound.play("game_start");
+  }
+  exit() { this.clock.stop(); }
+  snapshot() {
+    if (this.game.isOver) return null;
+    return { white: this.game.whiteName, black: this.game.blackName,
+      moves: this.game.history.map((r) => moveUci(r.move)),
+      times: { w: this.clock.timeLeft(WHITE), b: this.clock.timeLeft(BLACK) } };
+  }
+
+  toggleMute() {
+    const m = this.app.sound.toggleMute();
+    this.muteBtn.params = { muted: m }; this.muteBtn.tooltip = m ? "Unmute" : "Mute";
+  }
+  handle(ev) {
+    if (this.dialog) {
+      if (this.dialog.handle(ev)) { this.dialog = null; if (!this.game.isOver) this.clock.resume(); }
+      return;
+    }
+    if (this.resultModal) return this.handleResultModal(ev);
+    if (ev.type === "key") {
+      if (ev.key === "Escape") {
+        if (this.promotion) this.promotion = null;
+        else if (this.selected !== null) this.deselect();
+        else this.requestLeave();
+      } else if (ev.key.toLowerCase() === "m") this.toggleMute();
+      return;
+    }
+    if (this.muteBtn.handle(ev)) return this.toggleMute();
+    if (this.backBtn.handle(ev)) return this.requestLeave();
+    if (!this.game.isOver) {
+      if (this.resignBtn.handle(ev)) return this.requestResign();
+      if (this.drawBtn.handle(ev)) return this.requestDraw();
+    } else if (this.resultBtn.handle(ev)) return this.openResultModal();
+
+    if (this.promotion) { if (ev.type === "down" && ev.button === 0) this.clickPromotion(ev.pos); return; }
+
+    const inStrip = ev.pos && ev.pos[1] >= MOVE_BAR_Y && ev.pos[1] < MOVE_BAR_Y + MOVE_BAR_H;
+    const maxScroll = Math.max(0, this.tokensWidth - (W - 14));
+    if (ev.type === "wheel") {
+      if (inStrip) { this.manualScroll = true; this.scrollTarget = clamp(this.scrollTarget + ev.dx + ev.dy, 0, maxScroll); }
+      return;
+    }
+    if (ev.type === "down" && ev.button === 0 && inStrip) { this.stripDrag = [ev.pos[0], this.scrollTarget]; return; }
+    if (ev.type === "move" && this.stripDrag) {
+      this.manualScroll = true;
+      this.scrollTarget = this.scroll = clamp(this.stripDrag[1] - (ev.pos[0] - this.stripDrag[0]), 0, maxScroll);
+      return;
+    }
+    if (ev.type === "up" && this.stripDrag) { this.stripDrag = null; return; }
+
+    if (ev.type === "down" && ev.button === 0) this.boardDown(ev.pos);
+    else if (ev.type === "move" && this.drag) this.boardMove(ev.pos);
+    else if (ev.type === "up" && ev.button === 0) this.boardUp(ev.pos);
+    else if (ev.type === "down" && ev.button === 2) { this.deselect(); this.drag = null; }
+  }
+  boardDown(pos) {
+    this.anim = null;
+    const s = squareAt(pos);
+    if (s === null || this.game.isOver) return this.deselect();
+    if (this.selected !== null && this.targets.has(s)) return this.attemptMove(this.selected, s, true);
+    const p = this.game.board.pieceAt(s);
+    if (p && p.color === this.game.turn) {
+      const was = s === this.selected;
+      this.select(s);
+      this.drag = { origin: s, start: pos, pos, active: false, toggle: was };
+      return;
+    }
+    this.deselect();
+  }
+  boardMove(pos) {
+    const d = this.drag; d.pos = pos;
+    if (!d.active) { const dx = pos[0] - d.start[0], dy = pos[1] - d.start[1]; if (dx * dx + dy * dy >= 25) d.active = true; }
+  }
+  boardUp(pos) {
+    const d = this.drag; this.drag = null;
+    if (!d) return;
+    if (d.active) { const t = squareAt(pos); if (t !== null && t !== d.origin && this.targets.has(t)) this.attemptMove(d.origin, t, false); }
+    else if (d.toggle) this.deselect();
+  }
+  select(s) { this.selected = s; this.targets = this.game.legalTargets(s); }
+  deselect() { this.selected = null; this.targets = new Set(); }
+  attemptMove(start, end, animate) {
+    if (this.game.isPromotionMove(start, end)) return this.openPromotion(start, end, animate);
+    this.execute(start, end, null, animate);
+  }
+  execute(start, end, promotion, animate) {
+    const record = this.game.makeMove(start, end, promotion);
+    this.deselect(); this.promotion = null;
+    if (this.game.isOver) this.clock.pause(); else this.clock.switch();
+    this.startAnimation(record, animate);
+    this.playMoveSound(record);
+    this.tokensDirty = true; this.manualScroll = false;
+    if (this.game.isOver) this.onGameOver();
+  }
+  startAnimation(record, animate) {
+    const a = record.applied, items = [], hidden = new Set(), ghosts = [];
+    const tl = (s) => { const r = squareRect(s); return [r.x, r.y]; };
+    if (animate) {
+      items.push([a.placed.kind, paletteFor(a.placed.color), tl(record.move.start), tl(record.move.end)]);
+      hidden.add(record.move.end);
+      if (a.captured && a.capturedSquare !== null) ghosts.push([a.captured.kind, paletteFor(a.captured.color), tl(a.capturedSquare)]);
+    }
+    if (a.rookMove) {
+      const [from, to] = a.rookMove, rook = this.game.board.pieceAt(to);
+      if (rook) { items.push(["R", paletteFor(rook.color), tl(from), tl(to)]); hidden.add(to); }
+    }
+    this.anim = items.length ? { items, hidden, ghosts, t: 0 } : null;
+  }
+  playMoveSound(record) {
+    const s = this.app.sound, a = record.applied;
+    if (this.game.isOver) { s.play(a.captured ? "capture" : "move"); s.play("game_end"); }
+    else if (record.isCheck) s.play("check");
+    else if (a.isPromotion) s.play("promote");
+    else if (a.isCastle) s.play("castle");
+    else if (a.captured) s.play("capture");
+    else s.play("move");
+  }
+  openPromotion(start, end, animate) {
+    const color = this.game.turn, x = colOf(end) * SQ;
+    let order, top, cancel;
+    if (color === WHITE) { order = PROMOTION_CHOICES.slice(); top = BOARD_Y; cancel = new Rect(x, top + 4 * SQ, SQ, 34); }
+    else { order = PROMOTION_CHOICES.slice().reverse(); top = BOARD_Y + 4 * SQ; cancel = new Rect(x, top - 34, SQ, 34); }
+    const options = order.map((k, i) => [k, new Rect(x, top + i * SQ, SQ, SQ)]);
+    const cardTop = Math.min(top, cancel.y);
+    this.promotion = { start, end, color, animate, options, cancel, card: new Rect(x, cardTop, SQ, 4 * SQ + 34) };
+    this.drag = null; this.targets = new Set();
+  }
+  clickPromotion(pos) {
+    const p = this.promotion;
+    for (const [k, r] of p.options) if (r.contains(pos)) return this.execute(p.start, p.end, k, p.animate);
+    this.promotion = null; this.deselect();
+  }
+  openDialog(d) { this.dialog = d; this.clock.pause(); this.drag = null; }
+  requestLeave() {
+    if (this.game.isOver) return this.app.go("HOME");
+    this.openDialog(new ConfirmDialog("Leave match?", ["This game is still in progress.", "It will be abandoned and not saved."],
+      "Leave", () => this.app.go("HOME"), "Stay", null, "danger"));
+  }
+  requestResign() {
+    const color = this.game.turn, name = this.game.playerName(color);
+    this.openDialog(new ConfirmDialog("Resign?", [`${name} (${COLOR_NAMES[color]}), are you sure`, "you want to resign this game?"],
+      "Resign", () => this.finishBy(() => this.game.resign(color)), "Cancel", null, "danger"));
+  }
+  requestDraw() {
+    const off = this.game.turn, rec = opposite(off);
+    this.openDialog(new ConfirmDialog("Draw offered", [`${this.game.playerName(off)} offers a draw.`, `${this.game.playerName(rec)}, do you accept?`],
+      "Accept", () => this.finishBy(() => this.game.agreeDraw()), "Decline"));
+  }
+  finishBy(action) {
+    if (this.game.isOver) return;
+    action();
+    this.clock.pause(); this.deselect(); this.promotion = null; this.tokensDirty = true;
+    this.app.sound.play("game_end");
+    this.onGameOver();
+  }
+  onGameOver() {
+    this.modalTimer = 0.45;
+    if (!this.saved) {
+      this.saved = true;
+      this.app.history.save(buildMatchRecord(this.game, (Date.now() - this.startedAt) / 1000)).catch(() => {});
+    }
+  }
+  openResultModal() {
+    const card = Rect.centered(W / 2, BOARD_Y + BOARD / 2, 420, 372), bw = (card.w - 60) / 2;
+    this.resultModal = {
+      card,
+      rematch: new Button(new Rect(card.x + 24, card.bottom - 140, card.w - 48, 58), "Rematch", "primary", 21),
+      newGame: new Button(new Rect(card.x + 24, card.bottom - 72, bw, 50), "New Game", "secondary", 18),
+      home: new Button(new Rect(card.x + 36 + bw, card.bottom - 72, bw, 50), "Home", "secondary", 18),
+      close: new IconButton(new Rect(card.right - 46, card.y + 8, 38, 38), "close", "View board"),
+    };
+  }
+  handleResultModal(ev) {
+    const m = this.resultModal;
+    if (m.rematch.handle(ev)) this.app.go("GAME", { white: this.game.whiteName, black: this.game.blackName });
+    else if (m.newGame.handle(ev)) this.app.go("SETUP");
+    else if (m.home.handle(ev)) this.app.go("HOME");
+    else if (m.close.handle(ev) || (ev.type === "key" && ev.key === "Escape")) this.resultModal = null;
+  }
+  update(dt) {
+    if (this.anim) { this.anim.t += dt; if (this.anim.t >= MOVE_ANIM) this.anim = null; }
+    if (!this.game.isOver && !this.dialog) {
+      const f = this.clock.flagged();
+      if (f) this.finishBy(() => this.game.timeout(f));
+    }
+    if (this.modalTimer !== null) { this.modalTimer -= dt; if (this.modalTimer <= 0) { this.modalTimer = null; this.openResultModal(); } }
+    if (this.tokensDirty) this.rebuildTokens();
+    if (!this.manualScroll) this.scrollTarget = Math.max(0, this.tokensWidth - (W - 14));
+    this.scroll = lerp(this.scroll, this.scrollTarget, clamp(dt * 12));
+  }
+  rebuildTokens() {
+    this.tokensDirty = false;
+    const mf = font(17, true), nf = font(16), tokens = [];
+    let x = 14;
+    const last = this.game.history.length - 1;
+    this.game.history.forEach((rec, i) => {
+      if (i % 2 === 0) { const t = `${i / 2 + 1}.`, w = textWidth(t, nf); tokens.push({ kind: "num", text: t, x, w }); x += w + 6; }
+      let text = rec.san, icon = null;
+      if (rec.pieceKind !== "P" && !text.startsWith("O-")) { icon = [text[0], rec.color === WHITE ? "strip_hollow" : "strip_solid"]; text = text.slice(1); }
+      const w = textWidth(text, mf) + 16 + (icon ? 19 : 0);
+      tokens.push({ kind: "move", text, icon, x, w, latest: i === last });
+      x += w + 4;
+      if (i % 2 === 1) x += 10;
+    });
+    if (this.game.isOver) {
+      const t = this.game.outcome.result.replace(/1\/2/g, "½");
+      x += 6; const w = textWidth(t, font(17, true)); tokens.push({ kind: "result", text: t, x, w }); x += w + 8;
+    }
+    this.tokens = tokens; this.tokensWidth = x;
+  }
+  draw(app) {
+    ctx.fillStyle = css(C.BG_MAIN); ctx.fillRect(0, 0, W, H);
+    this.drawHeaderBar(app);
+    this.drawMoveBar();
+    this.drawPlayerBar(app, TOP_BAR_Y, BLACK);
+    this.drawBoard(app);
+    this.drawPlayerBar(app, BOTTOM_BAR_Y, WHITE);
+    if (this.promotion) this.drawPromotion(app);
+    if (this.resultModal) this.drawResultModal(app);
+    if (this.dialog) this.dialog.draw(app);
+    else if (!this.resultModal) for (const b of [this.backBtn, this.resignBtn, this.drawBtn, this.muteBtn]) b.drawTooltip(app);
+  }
+  drawHeaderBar(app) {
+    drawHeader(app, "Classical Chess", this.backBtn);
+    const over = this.game.isOver;
+    this.resignBtn.visible = this.drawBtn.visible = !over;
+    this.resignBtn.draw(app, C.TEXT_2, 22);
+    this.drawBtn.draw(app, C.TEXT_2, 26);
+    this.muteBtn.draw(app, C.TEXT_2, 24);
+    if (over && !this.resultModal) this.resultBtn.draw(app);
+  }
+  drawMoveBar() {
+    const bar = new Rect(0, MOVE_BAR_Y, W, MOVE_BAR_H);
+    ctx.fillStyle = css(C.BG_DEEP); ctx.fillRect(bar.x, bar.y, bar.w, bar.h);
+    if (!this.tokens.length) { blitText("Moves will appear here", font(16), C.TEXT_MUTED, "midleft", 16, bar.cy); return; }
+    ctx.save(); ctx.beginPath(); ctx.rect(bar.x, bar.y, bar.w, bar.h); ctx.clip();
+    const off = -Math.round(this.scroll);
+    for (const t of this.tokens) {
+      const x = t.x + off;
+      if (x > W || x + t.w < 0) continue;
+      if (t.kind === "move") {
+        if (t.latest) fillRounded(C.BG_RAISED_2, new Rect(x, bar.y + 7, t.w, bar.h - 14), 6);
+        let tx = x + 8;
+        if (t.icon) { drawPiece(t.icon[0], t.icon[1], 20, tx - 2, bar.cy - 10); tx += 19; }
+        blitText(t.text, font(17, true), t.latest ? C.TEXT : C.TEXT_2, "midleft", tx, bar.cy);
+      } else if (t.kind === "num") blitText(t.text, font(16), C.TEXT_MUTED, "midleft", x, bar.cy);
+      else blitText(t.text, font(17, true), C.LIGHT, "midleft", x, bar.cy);
+    }
+    if (this.scroll > 2) {
+      const g = ctx.createLinearGradient(0, 0, 28, 0);
+      g.addColorStop(0, css(C.BG_DEEP)); g.addColorStop(1, css(C.BG_DEEP, 0));
+      ctx.fillStyle = g; ctx.fillRect(0, bar.y, 28, bar.h);
+    }
+    ctx.restore();
+  }
+  drawClockDigits(text, f, color, right, cy) {
+    // tabular digits: every numeral gets the width of "0" so the clock never jitters
+    const dw = textWidth("0", f);
+    const widths = [...text].map((ch) => (/\d/.test(ch) ? dw : textWidth(ch, f)));
+    let x = right - widths.reduce((a, b) => a + b, 0);
+    [...text].forEach((ch, i) => {
+      const w = widths[i];
+      blitText(ch, f, color, "midtop", x + w / 2, cy - 30 * 1.25 / 2);
+      x += w;
+    });
+  }
+  drawPlayerBar(app, y, color) {
+    const g = this.game, active = !g.isOver && g.turn === color && !this.dialog;
+    const avatar = new Rect(16, y + 14, 48, 48);
+    fillRounded(C.AVATAR_BG, avatar, 4);
+    drawPieceCentered("P", "avatar", 42, avatar.cx, avatar.cy + 1);
+    ctx.beginPath(); ctx.arc(avatar.right - 2, avatar.bottom - 2, 8, 0, 7); ctx.fillStyle = css(C.BG_MAIN); ctx.fill();
+    ctx.beginPath(); ctx.arc(avatar.right - 2, avatar.bottom - 2, 6, 0, 7); ctx.fillStyle = css(PALETTES[paletteFor(color)].fill); ctx.fill();
+    const nf = font(19, true);
+    blitText(truncate(g.playerName(color), nf, 300), nf, C.TEXT, "topleft", 76, y + 10);
+
+    const enemyPal = color === WHITE ? "captured_black" : "white", captured = g.capturedBy(color);
+    let x = 76; const cy = y + 52;
+    for (const k of CAPTURE_ORDER) {
+      const n = captured.filter((c) => c === k).length;
+      if (!n) continue;
+      for (let i = 0; i < n; i++) { drawPiece(k, enemyPal, 22, x, cy - 11); x += 9; }
+      x += 15;
+    }
+    const lead = g.materialAdvantage(color);
+    if (lead > 0) blitText(`+${lead}`, font(15, true), C.TEXT_MUTED, "midleft", x + (captured.length ? 4 : 0), cy);
+
+    const remaining = this.clock.timeLeft(color), low = remaining < LOW_TIME_THRESHOLD;
+    const box = new Rect(W - 16 - 150, y + 14, 150, 48);
+    let bg, fg;
+    if (active) { bg = low ? C.TIMER_URGENT_BG : C.TIMER_ACTIVE_BG; fg = C.TIMER_ACTIVE_TEXT; }
+    else { bg = C.TIMER_INACTIVE_BG; fg = low ? C.TIMER_URGENT_TEXT : C.TIMER_INACTIVE_TEXT; }
+    fillRounded(bg, box, 6);
+    if (active) drawIcon("clock", box.x + 22, box.cy, 20, fg, { angle: (Math.floor(remaining) % 4) * 90, filled: true, hand: bg });
+    this.drawClockDigits(ChessClock.format(remaining), font(30, true), fg, box.right - 14, box.cy + 1);
+  }
+  drawBoard(app) {
+    const g = this.game, board = g.board;
+    const cf = font(15, true);
+    for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+      const light = (r + c) % 2 === 0;
+      ctx.fillStyle = css(light ? C.LIGHT : C.DARK);
+      ctx.fillRect(c * SQ, BOARD_Y + r * SQ, SQ, SQ);
+      const tc = light ? C.DARK : C.LIGHT;
+      if (c === 0) blitText(String(8 - r), cf, tc, "topleft", c * SQ + 5, BOARD_Y + r * SQ + 2);
+      if (r === 7) blitText(FILES[c], cf, tc, "bottomright", c * SQ + SQ - 5, BOARD_Y + r * SQ + SQ - 1);
+    }
+    const tint = (s, [col, a]) => { const rr = squareRect(s); ctx.fillStyle = css(col, a); ctx.fillRect(rr.x, rr.y, rr.w, rr.h); };
+    const last = g.lastMove();
+    if (last) { tint(last.move.start, C.LAST_MOVE); tint(last.move.end, C.LAST_MOVE); }
+    if (this.selected !== null) tint(this.selected, C.SELECTED);
+
+    let checkSq = null;
+    if (g.isOver && g.status === CHECKMATE) checkSq = board.findKing(g.turn);
+    else if (!g.isOver) checkSq = g.checkedKingSquare();
+    if (checkSq !== null) {
+      const rr = squareRect(checkSq);
+      const grad = ctx.createRadialGradient(rr.cx, rr.cy, 0, rr.cx, rr.cy, SQ * 0.72);
+      for (let i = 0; i <= 10; i++) grad.addColorStop(i / 10, css(C.CHECK, C.CHECK_ALPHA * (1 - (i / 10) ** 2.2)));
+      ctx.save(); ctx.beginPath(); ctx.rect(rr.x, rr.y, rr.w, rr.h); ctx.clip();
+      ctx.fillStyle = grad; ctx.fillRect(rr.x, rr.y, rr.w, rr.h); ctx.restore();
+    }
+
+    const hidden = new Set(this.anim ? this.anim.hidden : []);
+    if (this.drag && this.drag.active) hidden.add(this.drag.origin);
+    if (this.promotion) hidden.add(this.promotion.start);
+    if (this.anim) for (const [k, p, [x, y]] of this.anim.ghosts) drawPiece(k, p, SQ, x, y);
+
+    let hoverPiece = false;
+    const ms = squareAt(app.mouse);
+    for (const [s, p] of board.pieces()) {
+      if (hidden.has(s)) continue;
+      const rr = squareRect(s);
+      drawPiece(p.kind, paletteFor(p.color), SQ, rr.x, rr.y);
+      if (s === ms && p.color === g.turn && !g.isOver) hoverPiece = true;
+    }
+    if (this.selected !== null && !g.isOver) {
+      for (const t of this.targets) {
+        const rr = squareRect(t);
+        ctx.beginPath();
+        if (board.pieceAt(t)) { ctx.arc(rr.cx, rr.cy, SQ * 0.48 - SQ * 0.0425, 0, 7); ctx.lineWidth = SQ * 0.085; ctx.strokeStyle = "rgba(0,0,0,0.15)"; ctx.stroke(); }
+        else { ctx.arc(rr.cx, rr.cy, SQ * 0.16, 0, 7); ctx.fillStyle = "rgba(0,0,0,0.15)"; ctx.fill(); }
+      }
+      if (ms !== null && this.targets.has(ms)) hoverPiece = true;
+    }
+    if (this.drag && this.drag.active) {
+      const hs = squareAt(this.drag.pos);
+      if (hs !== null) { const rr = squareRect(hs); ctx.strokeStyle = "rgba(255,255,255,0.6)"; ctx.lineWidth = 4; ctx.strokeRect(rr.x + 2, rr.y + 2, SQ - 4, SQ - 4); }
+    }
+    if (this.anim) {
+      const p = easeOutCubic(this.anim.t / MOVE_ANIM);
+      for (const [k, pal, [x0, y0], [x1, y1]] of this.anim.items) drawPiece(k, pal, SQ, lerp(x0, x1, p), lerp(y0, y1, p));
+    }
+    if (this.drag && this.drag.active) {
+      const p = board.pieceAt(this.drag.origin);
+      if (p) { drawPiece(p.kind, paletteFor(p.color), SQ, this.drag.pos[0] - SQ / 2, this.drag.pos[1] - SQ / 2); hoverPiece = true; }
+    }
+    if (hoverPiece && !this.promotion && !this.dialog) app.handCursor = true;
+  }
+  drawPromotion(app) {
+    const p = this.promotion;
+    drawShadow(p.card, 4, 18, 150, [0, 6]);
+    fillRounded([255, 255, 255], p.card, 4);
+    const pal = paletteFor(p.color);
+    for (const [k, r] of p.options) {
+      if (r.contains(app.mouse)) { fillRounded([236, 234, 230], r, 4); app.handCursor = true; }
+      drawPiece(k, pal, SQ, r.x, r.y);
+    }
+    fillRounded(p.cancel.contains(app.mouse) ? [232, 230, 227] : [244, 243, 241], p.cancel, 4);
+    drawIcon("close", p.cancel.cx, p.cancel.cy, 16, [120, 118, 115]);
+  }
+  drawResultModal(app) {
+    const g = this.game, m = this.resultModal, card = m.card;
+    ctx.fillStyle = "rgba(0,0,0,0.43)"; ctx.fillRect(0, 0, W, H);
+    drawShadow(card, 16, 24, 180, [0, 12]);
+    fillRounded(C.BG_SURFACE, card, 16);
+    const bandColor = g.outcome.winner ? C.DARK : C.BG_RAISED_2;
+    ctx.save(); roundRectPath(ctx, card.x, card.y, card.w, card.h, 16); ctx.clip();
+    ctx.fillStyle = css(bandColor); ctx.fillRect(card.x, card.y, card.w, 104); ctx.restore();
+    const hf = font(30, true);
+    blitText(truncate(g.resultHeadline(), hf, card.w - 80), hf, C.TEXT, "midtop", card.cx, card.y + 20);
+    blitText(g.resultReason(), font(17), [245, 236, 224], "midtop", card.cx, card.y + 62);
+    const result = g.outcome.result;
+    const scores = result === "1/2-1/2" ? ["½", "½"] : result.split("-");
+    [WHITE, BLACK].forEach((color, i) => {
+      const cx = card.cx + (i === 0 ? -110 : 110);
+      const tile = Rect.centered(cx, card.y + 156, 64, 64);
+      fillRounded(color === WHITE ? C.LIGHT : C.DARK, tile, 10);
+      if (g.outcome.winner === color) fillRounded([245, 246, 130], tile.inflate(6, 6), 12, 3);
+      drawPieceCentered("K", paletteFor(color), 58, tile.cx, tile.cy);
+      const nf = font(15, true);
+      blitText(truncate(g.playerName(color), nf, 150), nf, C.TEXT_2, "midtop", cx, tile.bottom + 8);
+    });
+    blitText(`${scores[0]}  –  ${scores[1]}`, font(34, true), C.TEXT, "center", card.cx, card.y + 156);
+    blitText(`${g.fullmoveCount()} moves`, font(14), C.TEXT_MUTED, "center", card.cx, card.y + 188);
+    m.rematch.draw(app); m.newGame.draw(app); m.home.draw(app);
+    m.close.draw(app, [245, 236, 224], 20);
+  }
+}
+
+class HistoryScreen extends Screen {
+  constructor(app) {
+    super(app);
+    this.CARD_H = 108; this.GAP = 12; this.MARGIN = 16; this.LIST_TOP = HEADER_H + 52;
+    this.backBtn = new IconButton(new Rect(8, 8, 40, 40), "back", "Back");
+    this.clearBtn = new IconButton(new Rect(W - 48, 8, 40, 40), "trash", "Clear all history");
+    this.playBtn = new Button(new Rect(W / 2 - 140, 520, 280, 60), "Play a Game", "primary", 21);
+    this.view = new Rect(0, this.LIST_TOP, W, H - this.LIST_TOP);
+    this.matches = []; this.loading = true;
+    this.scroll = 0; this.target = 0; this.dragFrom = null; this.pressedDelete = null; this.dialog = null;
+    this.reload();
+  }
+  reload() {
+    this.app.history.load().then((list) => {
+      this.matches = list; this.loading = false;
+      this.target = clamp(this.target, 0, this.maxScroll()); this.scroll = clamp(this.scroll, 0, this.maxScroll());
+    });
+  }
+  get contentHeight() { return this.MARGIN + this.matches.length * (this.CARD_H + this.GAP); }
+  maxScroll() { return Math.max(0, this.contentHeight - this.view.h + this.MARGIN); }
+  cardRect(i) { return new Rect(this.MARGIN, this.view.y + this.MARGIN - Math.round(this.scroll) + i * (this.CARD_H + this.GAP), W - 2 * this.MARGIN, this.CARD_H); }
+  deleteRect(card) { return new Rect(card.right - 46, card.y + 10, 34, 34); }
+  deleteHit(pos) {
+    if (!this.view.contains(pos)) return null;
+    for (let i = 0; i < this.matches.length; i++) if (this.deleteRect(this.cardRect(i)).contains(pos)) return i;
+    return null;
+  }
+  askDelete(i) {
+    const m = this.matches[i];
+    this.dialog = new ConfirmDialog("Delete Match?", [`${m.white || "?"} vs ${m.black || "?"}`, `Played ${relativeTime(m.timestamp || 0).toLowerCase()}`],
+      "Delete", () => { this.matches = this.matches.filter((x) => x !== m); this.app.history.remove(m.id).then(() => this.reload()); this.dialog = null; },
+      "Cancel", () => (this.dialog = null), "danger");
+  }
+  askClear() {
+    const n = this.matches.length;
+    this.dialog = new ConfirmDialog("Clear All History?", [`All ${n} saved match${n !== 1 ? "es" : ""} will be deleted.`, "This cannot be undone."],
+      "Delete All", () => { const all = this.matches; this.matches = []; this.app.history.clear(all).then(() => this.reload()); this.dialog = null; },
+      "Cancel", () => (this.dialog = null), "danger");
+  }
+  handle(ev) {
+    if (this.dialog) { if (this.dialog.handle(ev)) this.dialog = null; return; }
+    if (this.backBtn.handle(ev)) return this.app.go("HOME");
+    if (!this.loading && !this.matches.length && this.playBtn.handle(ev)) return this.app.go("SETUP");
+    this.clearBtn.visible = this.matches.length > 0;
+    if (this.clearBtn.handle(ev)) return this.askClear();
+    if (ev.type === "down" && ev.button === 0) {
+      const hit = this.deleteHit(ev.pos);
+      if (hit !== null) { this.pressedDelete = hit; return; }
+    } else if (ev.type === "up" && ev.button === 0 && this.pressedDelete !== null) {
+      const p = this.pressedDelete; this.pressedDelete = null;
+      if (this.deleteHit(ev.pos) === p) this.askDelete(p);
+      return;
+    }
+    if (ev.type === "key") {
+      const step = { ArrowUp: -60, ArrowDown: 60, PageUp: -this.view.h + 60, PageDown: this.view.h - 60 }[ev.key];
+      if (ev.key === "Escape") this.app.go("HOME");
+      else if (ev.key === "Home") this.target = 0;
+      else if (ev.key === "End") this.target = this.maxScroll();
+      else if (step) this.target = clamp(this.target + step, 0, this.maxScroll());
+    } else if (ev.type === "wheel") this.target = clamp(this.target + ev.dy, 0, this.maxScroll());
+    else if (ev.type === "down" && ev.button === 0) { if (this.view.contains(ev.pos)) this.dragFrom = [ev.pos[1], this.target]; }
+    else if (ev.type === "move" && this.dragFrom) { this.target = this.scroll = clamp(this.dragFrom[1] - (ev.pos[1] - this.dragFrom[0]), 0, this.maxScroll()); }
+    else if (ev.type === "up") this.dragFrom = null;
+  }
+  update(dt) { this.scroll = lerp(this.scroll, this.target, clamp(dt * 14)); }
+  draw(app) {
+    ctx.fillStyle = css(C.BG_MAIN); ctx.fillRect(0, 0, W, H);
+    drawHeader(app, "Match History", this.backBtn);
+    this.clearBtn.visible = this.matches.length > 0;
+    this.clearBtn.draw(app, C.TEXT_2, 24);
+    const total = this.matches.length, decisive = this.matches.filter((m) => m.winner).length;
+    let summary = this.loading ? "Loading matches..." : `${total} match${total !== 1 ? "es" : ""}`;
+    if (total) summary += `  ·  ${decisive} decisive  ·  ${total - decisive} drawn`;
+    blitText(summary, font(15, true), C.TEXT_MUTED, "midleft", this.MARGIN + 4, HEADER_H + 26);
+    if (!this.loading) {
+      const where = app.history.mode === "cloud" ? "Saved to your account" : "Saved in this browser";
+      blitText(where, font(14), C.TEXT_MUTED, "midright", W - this.MARGIN - 4, HEADER_H + 26);
+    }
+    if (!this.loading && !total) this.drawEmpty(app);
+    else if (total) {
+      ctx.save(); ctx.beginPath(); ctx.rect(this.view.x, this.view.y, this.view.w, this.view.h); ctx.clip();
+      const interactive = !this.dialog && this.view.contains(app.mouse);
+      this.matches.forEach((m, i) => {
+        const r = this.cardRect(i);
+        if (r.bottom < this.view.y || r.y > this.view.bottom) return;
+        this.drawCard(r, m, interactive && r.contains(app.mouse));
+        const bin = this.deleteRect(r), bh = interactive && bin.contains(app.mouse);
+        if (bh) { app.handCursor = true; fillRounded(C.BTN_DANGER, bin, 8); }
+        drawIcon("trash", bin.cx, bin.cy, 20, bh ? C.TEXT : C.TEXT_MUTED);
+      });
+      ctx.restore();
+      const ms = this.maxScroll();
+      if (ms > 0) {
+        const track = this.view.h - 16, thumb = Math.max(40, track * this.view.h / (this.contentHeight + this.MARGIN));
+        const ty = this.view.y + 8 + (track - thumb) * clamp(this.scroll / ms);
+        fillRounded(C.BG_RAISED_2, new Rect(W - 7, ty, 4, thumb), 2);
+      }
+    }
+    if (this.dialog) this.dialog.draw(app);
+    else { this.clearBtn.drawTooltip(app); this.backBtn.drawTooltip(app); }
+  }
+  drawCard(rect, m, hover) {
+    fillRounded(hover ? C.BG_RAISED : C.BG_SURFACE, rect, 10);
+    const winner = m.winner, result = m.result || "*";
+    const badge = new Rect(rect.x + 16, rect.y + 22, 64, 64);
+    let bbg = C.BG_RAISED_2, bfg = C.TEXT;
+    if (winner === "white") { bbg = C.LIGHT; bfg = C.TEXT_DARK; } else if (winner === "black") bbg = C.BG_DEEP;
+    fillRounded(bbg, badge, 10);
+    if (winner === "black") fillRounded(C.BG_RAISED_2, badge, 10, 2);
+    blitText(result === "1/2-1/2" ? "½-½" : result, font(19, true), bfg, "center", badge.cx, badge.cy);
+    const nf = font(18, true), top = rect.y + 18;
+    let x = badge.right + 18;
+    [["white", PALETTES.white.fill], ["black", PALETTES.black.fill]].forEach(([key, fill], i) => {
+      if (i === 1) x = blitText("vs", font(15), C.TEXT_MUTED, "midleft", x, top + 11).right + 10;
+      ctx.beginPath(); ctx.arc(x + 7, top + 11, 8, 0, 7); ctx.fillStyle = css(C.BG_DEEP); ctx.fill();
+      ctx.beginPath(); ctx.arc(x + 7, top + 11, 6, 0, 7); ctx.fillStyle = css(fill); ctx.fill();
+      const name = truncate(String(m[key] || "?"), nf, 150);
+      x = blitText(name, nf, winner === key || !winner ? C.TEXT : C.TEXT_2, "midleft", x + 20, top + 11).right + 10;
+    });
+    const reason = m.reason_text || "";
+    let line;
+    if (winner) line = `${m[winner] || winner} won ${reason}`.trim();
+    else if (reason.startsWith("by ") || reason.startsWith("on ")) line = `Draw ${reason}`;
+    else line = reason ? `Draw · ${reason}` : "Draw";
+    const lf = font(16);
+    blitText(truncate(line, lf, rect.right - badge.right - 40), lf, C.TEXT_2, "topleft", badge.right + 18, rect.y + 46);
+    const moves = m.move_count || 0;
+    let details = `${moves} move${moves !== 1 ? "s" : ""}`;
+    if (m.duration_seconds) { const d = Math.floor(m.duration_seconds); details += `  ·  ${Math.floor(d / 60)}m ${String(d % 60).padStart(2, "0")}s`; }
+    blitText(details, font(14), C.TEXT_MUTED, "topleft", badge.right + 18, rect.y + 74);
+    blitText(relativeTime(m.timestamp || 0), font(14, true), C.TEXT_MUTED, "topright", rect.right - 16, rect.y + 76);
+  }
+  drawEmpty(app) {
+    drawPieceCentered("R", "splash_dark", 140, W / 2, 300);
+    blitText("No matches yet", font(24, true), C.TEXT, "midtop", W / 2, 390);
+    blitText("Finished games are saved here automatically.", font(16), C.TEXT_MUTED, "midtop", W / 2, 428);
+    this.playBtn.draw(app);
+  }
+}
+
+/* ================================================================== app */
+class App {
+  constructor(data) {
+    this.wrap = document.getElementById("wrap");
+    this.box = document.getElementById("box");
+    this.stage = document.getElementById("stage");
+    this.canvas = document.getElementById("board");
+    ctx = this.canvas.getContext("2d");
+    this.fields = [...document.querySelectorAll(".field")].map((wrap) => ({ wrap, input: wrap.querySelector("input") }));
+    this.sound = new SoundManager();
+    this.history = new HistoryStore();
+    this.playerNames = (data && data.names) || ["", ""];
+    this.p1White = data && typeof data.p1White === "boolean" ? data.p1White : true;
+    this.mouse = [-1, -1]; this.pointerType = "mouse"; this.handCursor = false;
+    this.screen = null; this.state = null; this.pending = null; this.fade = null;
+    this.SCREENS = { SPLASH: SplashScreen, HOME: HomeScreen, SETUP: SetupScreen, GAME: GameScreen, HISTORY: HistoryScreen };
+    this.layout();
+    new ResizeObserver(() => this.layout()).observe(this.wrap);
+    window.addEventListener("resize", () => this.layout());
+    this.bindEvents();
+    if (data && data.game) { this.go("GAME", { white: data.game.white, black: data.game.black, restore: data.game }); }
+    else this.go(data && data.state ? "HOME" : "SPLASH");
+    this.applyPending(false);
+    this.last = performance.now();
+    requestAnimationFrame((t) => this.frame(t));
+  }
+  layout() {
+    const cs = getComputedStyle(this.wrap);
+    const aw = this.wrap.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const ah = this.wrap.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    const s = Math.max(0.2, Math.min(aw / W, ah / H, 1.6));
+    this.scale = s;
+    this.box.style.width = W * s + "px"; this.box.style.height = H * s + "px";
+    this.stage.style.transform = `scale(${s})`;
+    const px = s * (window.devicePixelRatio || 1);
+    if (Math.abs(px - PX) > 1e-3 || !this.canvas.width) {
+      PX = px;
+      this.canvas.width = Math.round(W * PX); this.canvas.height = Math.round(H * PX);
+      pieceCache.clear(); prewarmQueue = PREWARM.slice();
+    }
+  }
+  toLogical(e) {
+    const r = this.canvas.getBoundingClientRect();
+    return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height];
+  }
+  dispatch(ev) {
+    if (this.pending) return;
+    if (this.fade && (ev.type === "down" || ev.type === "up")) return;
+    this.screen.handle(ev);
+  }
+  bindEvents() {
+    const cv = this.canvas;
+    cv.addEventListener("pointerdown", (e) => {
+      this.sound.unlock();
+      this.pointerType = e.pointerType || "mouse";
+      if (document.activeElement && document.activeElement.tagName === "INPUT") document.activeElement.blur();
+      try { cv.setPointerCapture(e.pointerId); } catch (_) {}
+      this.mouse = this.toLogical(e);
+      this.dispatch({ type: "down", pos: this.mouse, button: e.button === 2 ? 2 : e.button === 0 ? 0 : 1 });
+    });
+    cv.addEventListener("pointermove", (e) => {
+      this.pointerType = e.pointerType || "mouse";
+      this.mouse = this.toLogical(e);
+      this.dispatch({ type: "move", pos: this.mouse });
+    });
+    const up = (e) => {
+      this.mouse = this.toLogical(e);
+      this.dispatch({ type: "up", pos: this.mouse, button: e.button === 2 ? 2 : e.button === 0 ? 0 : 1 });
+      if (e.pointerType === "touch") this.mouse = [-1, -1];
+    };
+    cv.addEventListener("pointerup", up);
+    cv.addEventListener("pointercancel", up);
+    cv.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse" && !e.buttons) this.mouse = [-1, -1]; });
+    cv.addEventListener("contextmenu", (e) => e.preventDefault());
+    cv.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const k = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 600 : 1;
+      this.dispatch({ type: "wheel", pos: this.toLogical(e), dx: e.deltaX * k / this.scale, dy: e.deltaY * k / this.scale });
+    }, { passive: false });
+    window.addEventListener("keydown", (e) => {
+      this.sound.unlock();
+      const inInput = e.target && e.target.tagName === "INPUT";
+      if (inInput && !["Enter", "Escape"].includes(e.key)) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", " ", "Home", "End"].includes(e.key)) e.preventDefault();
+      if (e.key === "Enter" && inInput) e.preventDefault();
+      this.dispatch({ type: "key", key: e.key });
+    });
+    for (const f of this.fields) f.input.addEventListener("pointerdown", () => this.sound.unlock());
+  }
+  go(state, opts = {}) { this.pending = [state, opts]; }
+  applyPending(fade = true) {
+    if (!this.pending) return;
+    const [state, opts] = this.pending;
+    this.pending = null;
+    if (this.screen) {
+      this.screen.exit();
+      if (fade) {
+        const snap = document.createElement("canvas");
+        snap.width = this.canvas.width; snap.height = this.canvas.height;
+        snap.getContext("2d").drawImage(this.canvas, 0, 0);
+        this.fade = { snap, t: 0 };
+      }
+    }
+    this.screen = new this.SCREENS[state](this, opts);
+    this.state = state;
+    this.screen.enter();
+  }
+  snapshot() {
+    if (this.state === "GAME" && this.screen.snapshot) {
+      const g = this.screen.snapshot();
+      if (g) return { game: g, names: this.playerNames, p1White: this.p1White };
+    }
+    return { state: "HOME", names: this.playerNames, p1White: this.p1White };
+  }
+  frame(now) {
+    const dt = Math.min((now - this.last) / 1000, 0.1);
+    this.last = now;
+    prewarmStep(4);
+    this.screen.update(dt);
+    this.handCursor = false;
+    ctx.setTransform(PX, 0, 0, PX, 0, 0);
+    ctx.globalAlpha = 1;
+    this.screen.draw(this);
+    if (this.fade) {
+      this.fade.t += dt;
+      const p = this.fade.t / FADE;
+      if (p >= 1) this.fade = null;
+      else {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.globalAlpha = 1 - easeInOut(p);
+        ctx.drawImage(this.fade.snap, 0, 0, this.canvas.width, this.canvas.height);
+        ctx.globalAlpha = 1;
+      }
+    }
+    this.canvas.style.cursor = this.handCursor ? "pointer" : "default";
+    this.applyPending();
+    requestAnimationFrame((t) => this.frame(t));
+  }
+}
+
+
+/* ================================================================= boot */
+let APP = null;
+function boot(data) { if (!APP) APP = new App(data || {}); }
+(function start() {
+  const hot = window.claude && window.claude.hot;
+  try { if (hot && typeof hot.snapshot === "function") hot.snapshot(() => (APP ? APP.snapshot() : {})); } catch (e) {}
+  const go = () => {
+    if (hot && typeof hot.ready === "function") hot.ready(boot);
+    else boot((hot && hot.data) || {});
+  };
+  if (document.fonts && document.fonts.load) {
+    Promise.race([
+      Promise.all([document.fonts.load(font(20, true)), document.fonts.load(font(20))]),
+      new Promise((r) => setTimeout(r, 1500)),
+    ]).then(go, go);
+  } else go();
+})();
+</script>
+</body>
+</html>

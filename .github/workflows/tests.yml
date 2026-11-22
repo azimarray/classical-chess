@@ -20,7 +20,7 @@ jobs:
         run: python -m unittest test_chess.py -v
 
   streamlit:
-    name: Streamlit version (Python, 26 tests)
+    name: Streamlit version (Python, 28 tests)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

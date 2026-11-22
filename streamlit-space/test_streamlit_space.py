@@ -2,7 +2,8 @@
 Tests for the Streamlit version. They run without Streamlit installed:
 
   * match.py and view.py are plain Python and are tested directly.
-  * app.py is run against a small stand-in for the `streamlit` module, which
+  * app.py (the exact website, embedded) is checked to load index.html full-screen.
+  * app_python.py is run against a small stand-in for the `streamlit` module, which
     walks through every screen and checks the page code does not crash and
     does the right thing (start, move, finish, history, delete, clear).
   * the engine files are checked to be identical to the desktop copies.
@@ -266,10 +267,10 @@ class AppTests(unittest.TestCase):
         patcher = mock.patch.dict(sys.modules, {"streamlit": self.st})
         patcher.start()
         self.addCleanup(patcher.stop)
-        sys.modules.pop("app", None)
-        import app
-        self.app = app
-        self.addCleanup(lambda: sys.modules.pop("app", None))
+        sys.modules.pop("app_python", None)
+        import app_python
+        self.app = app_python
+        self.addCleanup(lambda: sys.modules.pop("app_python", None))
 
     def run_app(self, clicks=(), pick=None, typed=None):
         st = self.st
@@ -403,8 +404,40 @@ class AppTests(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------
+class EmbeddedSiteTests(unittest.TestCase):
+    """app.py: the Netlify website shown full-screen on the Streamlit server."""
+
+    def test_app_embeds_the_website_full_screen(self):
+        st = make_streamlit()
+        components_v1 = types.ModuleType("streamlit.components.v1")
+        components_v1.html = mock.MagicMock(name="html")
+        components = types.ModuleType("streamlit.components")
+        components.v1 = components_v1
+        st.components = components
+        mods = {"streamlit": st, "streamlit.components": components, "streamlit.components.v1": components_v1}
+        with mock.patch.dict(sys.modules, mods):
+            sys.modules.pop("app", None)
+            import app
+            try:
+                app.main()
+            finally:
+                sys.modules.pop("app", None)
+        html = components_v1.html.call_args[0][0]
+        self.assertIn('<canvas id="board"', html)
+        self.assertIn("class SplashScreen", html)
+        self.assertEqual(components_v1.html.call_args[1].get("scrolling"), False)
+        css = st.markdown.call_args_list[0][0][0]
+        self.assertIn('header[data-testid="stHeader"]', css)
+        self.assertIn("100vh", css)
+
+
+# --------------------------------------------------------------------------
 @unittest.skipUnless(os.path.isdir(os.path.join(HERE, "..", "desktop")), "desktop folder not present")
 class EngineCopyTests(unittest.TestCase):
+    def test_index_html_matches_the_website(self):
+        with open(os.path.join(HERE, "index.html"), "rb") as a, open(os.path.join(HERE, "..", "index.html"), "rb") as b:
+            self.assertEqual(a.read(), b.read(), "index.html differs from the website; copy ../index.html over")
+
     def test_engine_files_match_the_desktop_version(self):
         for name in ("constants.py", "pieces.py", "board.py", "game.py", "timer.py", "history_manager.py"):
             with open(os.path.join(HERE, name), "rb") as a, open(os.path.join(HERE, "..", "desktop", name), "rb") as b:

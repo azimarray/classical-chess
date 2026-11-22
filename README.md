@@ -8,7 +8,7 @@ This repository holds three versions of the same game:
 
 | | Website (this folder) | Desktop (`desktop/`) | Streamlit (`streamlit-space/`) |
 |---|---|---|---|
-| Language | HTML + JavaScript | Python + Pygame | Python + Streamlit |
+| Language | HTML + JavaScript | Python + Pygame | Python (Streamlit) server |
 | How to play | Open the site in any browser, on any device | `python main.py` | `streamlit run app.py`, or host it (for example on Hugging Face) |
 | Needs installing | Nothing | Python 3.9+ and Pygame | Python and Streamlit |
 | Match history | Saved in the player's browser | Saved to `match_history.json` | Kept for the current visit only |
@@ -75,7 +75,7 @@ python -m unittest test_chess.py -v   # 74 rule tests, no window needed
 
 ## Streamlit version
 
-A Python version that runs in the browser, built to be hosted (for example as a Hugging Face Space). It reuses the same rules engine as the desktop version. See [`streamlit-space/README.md`](streamlit-space/README.md) for how to run it and how to put it on Hugging Face.
+A Python (Streamlit) app built to be hosted, for example as a Hugging Face Space. `app.py` shows exactly the same game as the website; `app_python.py` is a simpler version where the Python rules engine plays the game. See [`streamlit-space/README.md`](streamlit-space/README.md) for how to run it and how to put it on Hugging Face.
 
 ## Tests
 
@@ -84,7 +84,7 @@ Every push and pull request runs three test jobs on GitHub Actions (see the **Ac
 | Job | What it covers |
 |---|---|
 | **Desktop rules** (Python, 74 tests) | Every chess rule, notation, FEN, the clock and saving history, plus perft move counts against published reference positions |
-| **Streamlit version** (Python, 26 tests) | The move, clock and history logic, the SVG board, every screen of the Streamlit page (run against a stand-in for Streamlit), and a check that its engine files are identical to the desktop ones |
+| **Streamlit version** (Python, 28 tests) | The embedded website, the Python-engine version's move, clock and history logic, its SVG board and every screen (run against a stand-in for Streamlit), and checks that `index.html` and the engine files are identical to the website and desktop copies |
 | **Website** (Chromium, 28 tests) | The rules engine running in the real page, the opening animation (drawn pieces, auto-advance, key and click skip), home and setup screens, click and drag moves, castling, en passant, promotion, checkmate, repetition, resign, draw offers, timeouts, leaving a game, rematch, saving, listing and deleting match history, keyboard shortcuts, sound effects, layout at five screen sizes from laptop to small phone, and no JavaScript errors |
 
 Run them on your own computer:
