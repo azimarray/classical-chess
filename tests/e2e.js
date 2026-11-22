@@ -1,8 +1,8 @@
 /*
  * End-to-end tests for the Classical Chess website.
  *
- * Serves the repository root (index.html + intro videos) on a local port, then drives the real
- * page in headless Chromium: intro, menus, moves, special rules, game endings, match history,
+ * Serves the repository root (index.html) on a local port, then drives the real
+ * page in headless Chromium: opening animation, menus, moves, special rules, game endings, match history,
  * keyboard, sound and layout at five screen sizes.
  *
  *   cd tests && npm install && npx playwright install chromium && node e2e.js
@@ -15,7 +15,7 @@ const http = require('http');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mp4': 'video/mp4', '.webm': 'video/webm', '.json': 'application/json' };
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.json': 'application/json' };
 
 function serve() {
   const server = http.createServer((req, res) => {
@@ -49,7 +49,6 @@ async function test(name, fn) {
   const server = await serve();
   URL = `http://127.0.0.1:${server.address().port}/`;
   const browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
-  const blockedBrowser = await chromium.launch({ args: ['--autoplay-policy=user-gesture-required'] });
   const pageErrors = [];
 
   async function open(b = browser, viewport = { width: 1000, height: 1000 }, opts = {}) {
@@ -61,7 +60,7 @@ async function test(name, fn) {
     await p.waitForFunction(() => typeof APP !== 'undefined' && APP);
     return p;
   }
-  const skipIntro = async (p) => { await p.keyboard.press('Escape'); await p.waitForFunction(() => !document.getElementById('intro')); await p.waitForTimeout(150); };
+  const skipIntro = async (p) => { await p.waitForTimeout(400); await p.keyboard.press('Escape'); await p.waitForFunction(() => APP.state === 'HOME'); await p.waitForTimeout(400); };
   const state = (p) => p.evaluate(() => APP.state);
   const toPage = async (p, x, y) => p.evaluate(([x, y]) => { const r = document.getElementById('board').getBoundingClientRect(); return [r.left + x * r.width / 640, r.top + y * r.height / 892]; }, [x, y]);
   const clickAt = async (p, x, y) => { const [a, b] = await toPage(p, x, y); await p.mouse.click(a, b); await p.waitForTimeout(60); };
@@ -87,36 +86,32 @@ async function test(name, fn) {
     await p.context().close();
   });
 
-  // ---------------------------------------------------------------- 2. intro
-  await test('Intro plays with sound when the browser allows it, then opens Home', async () => {
-    const p = await open(); await p.waitForTimeout(900);
-    const v = await p.evaluate(() => { const v = document.querySelector('#intro video'); return v && { playing: !v.paused, muted: v.muted, src: v.currentSrc.split('/').pop() }; });
-    ok(v && v.playing && !v.muted, 'expected unmuted playback, got ' + JSON.stringify(v));
-    await p.waitForFunction(() => !document.getElementById('intro'), null, { timeout: 7000 });
-    ok(await state(p) === 'HOME', 'not on Home after intro');
+  // ---------------------------------------------------------------- 2. opening animation
+  const pixel = (p, x, y) => p.evaluate(([x, y]) => { const c = document.getElementById('board'), k = c.width / 640; return Array.from(c.getContext('2d').getImageData(Math.round(x * k), Math.round(y * k), 1, 1).data); }, [x, y]);
+  const isBg = (px) => Math.abs(px[0] - 0x26) < 6 && Math.abs(px[1] - 0x24) < 6 && Math.abs(px[2] - 0x21) < 6;
+  await test('Opening animation: pawn, knight and rook appear, then the app opens Home by itself', async () => {
+    const p = await open();
+    ok(await state(p) === 'SPLASH', 'did not start on the splash screen');
+    ok(await p.evaluate(() => !document.querySelector('video') && !document.getElementById('intro')), 'old video intro still in the page');
+    await p.waitForTimeout(500);
+    ok(isBg(await pixel(p, 130, 300)), 'splash should start on the plain dark background');
+    await p.waitForTimeout(1400);   // ~1.9 s in: all three pieces are in place
+    ok(!isBg(await pixel(p, 320, 470)), 'pawn not drawn');
+    ok(!isBg(await pixel(p, 228, 480)) || !isBg(await pixel(p, 215, 440)), 'knight not drawn');
+    ok(!isBg(await pixel(p, 412, 480)) || !isBg(await pixel(p, 412, 440)), 'rook not drawn');
+    await p.waitForFunction(() => APP.state === 'HOME', null, { timeout: 5000 });
     await p.context().close();
   });
-  await test('Intro falls back to muted when sound is blocked (no buttons shown)', async () => {
-    const p = await open(blockedBrowser); await p.waitForTimeout(900);
-    const v = await p.evaluate(() => { const v = document.querySelector('#intro video'); return v && { playing: !v.paused, muted: v.muted, buttons: document.querySelectorAll('#intro button').length }; });
-    ok(v && v.playing && v.muted && v.buttons === 0, JSON.stringify(v));
-    await p.waitForFunction(() => !document.getElementById('intro'), null, { timeout: 7000 });
-    await p.context().close();
-  });
-  await test('Esc, Enter and Space each skip the intro', async () => {
-    for (const key of ['Escape', 'Enter', 'Space']) {
-      const p = await open(); await p.waitForTimeout(500); await p.keyboard.press(key);
-      await p.waitForFunction(() => !document.getElementById('intro'), null, { timeout: 2000 });
-      ok(await state(p) === 'HOME', key + ' left Home');   // the key must not also trigger "Play"
+  await test('Any key or a click skips the opening animation (and does not also press Play)', async () => {
+    for (const how of ['Escape', 'Enter', 'Space', 'click']) {
+      const p = await open(); await p.waitForTimeout(500);
+      if (how === 'click') await clickAt(p, 320, 300); else await p.keyboard.press(how);
+      await p.waitForFunction(() => APP.state === 'HOME', null, { timeout: 2000 });
+      await p.waitForTimeout(500);
+      ok(await state(p) === 'HOME', how + ' went past Home');
       await p.context().close();
     }
   });
-  await test('Game is locked while the intro is showing', async () => {
-    const p = await open(); await p.waitForTimeout(400);
-    ok(await p.evaluate(() => APP.blocked) === true, 'app not blocked during intro');
-    await p.context().close();
-  });
-
   // ---------------------------------------------------------------- 3. home & setup
   await test('Home: Play Game, Match History and Sound toggle work', async () => {
     const p = await open(); await skipIntro(p);
@@ -342,7 +337,7 @@ async function test(name, fn) {
 
   await test('No JavaScript errors during the whole run', async () => { ok(pageErrors.length === 0, pageErrors.slice(0, 3).join(' | ')); });
 
-  await browser.close(); await blockedBrowser.close(); server.close();
+  await browser.close(); server.close();
   for (const [n, s, why] of results) console.log(`${s}  ${n}${why ? '  -> ' + why : ''}`);
   const passed = results.filter((r) => r[1] === 'PASS').length;
   console.log(`\n${passed}/${results.length} passed`);

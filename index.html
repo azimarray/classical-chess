@@ -24,7 +24,6 @@
   --muted: #8B8987;
   --pill: #3C3B39;
   --pill-text: #C3C2C0;
-  --intro-bg: #0A0A0A;
   --font-ui: Figtree, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
 }
 html, body { height: 100%; }
@@ -60,29 +59,10 @@ body { background: var(--bg); color: var(--text); overflow: hidden; font-family:
   background: var(--pill); color: var(--pill-text);
   font: 700 13px var(--font-ui); padding: 4px 7px; border-radius: 999px; pointer-events: none;
 }
-#intro {
-  position: fixed; inset: 0; z-index: 20;
-  background: var(--intro-bg);
-  display: flex; align-items: center; justify-content: center;
-  padding-left: max(16px, env(safe-area-inset-left, 0px));
-  padding-right: max(16px, env(safe-area-inset-right, 0px));
-  transition: opacity 0.6s ease, visibility 0.6s ease;
-}
-#intro.leaving { opacity: 0; visibility: hidden; pointer-events: none; }
-#intro video {
-  display: block; width: 100%; max-width: 1280px; max-height: 100%;
-  aspect-ratio: 16 / 9; object-fit: contain; background: var(--intro-bg);
-  visibility: hidden;
-}
-#intro.playing video { visibility: visible; }
-@media (prefers-reduced-motion: reduce) { #intro { transition: none; } }
 </style>
 <style>html,body{margin:0}:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);box-sizing:border-box}</style>
 </head>
 <body>
-<div id="intro" role="dialog" aria-label="Opening animation">
-  <video playsinline preload="auto" aria-label="AZIM ARCHIVE opening animation"><source src="splash.mp4" type="video/mp4"><source src="splash.webm" type="video/webm"></video>
-</div>
 <div id="wrap">
   <div id="box">
     <div id="stage">
@@ -1258,6 +1238,50 @@ class Screen {
   enter() {} exit() {} handle() {} update() {} draw() {}
 }
 
+/* Opening animation: the pawn pops up, the knight and rook slide out from behind it,
+   then the wordmark fades in. Any key or click skips it. */
+const SPLASH_DURATION = 2.5;
+class SplashScreen extends Screen {
+  constructor(app) {
+    super(app);
+    this.t = REDUCED_MOTION ? 1.7 : 0;   // reduced motion: show the finished picture briefly
+    this.done = false;
+  }
+  handle(ev) {
+    if ((ev.type === "down" || ev.type === "key") && this.t > 0.3) this.t = Math.max(this.t, SPLASH_DURATION);
+  }
+  update(dt) {
+    this.t += dt;
+    if (this.t >= SPLASH_DURATION && !this.done) { this.done = true; this.app.go("HOME"); }
+  }
+  piece(kind, palette, size, scale, x, bottom, alpha, flip = false) {
+    if (scale <= 0.01 || alpha <= 0) return;
+    const img = pieceImage(kind, palette, size), s = size * scale;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(x, bottom);
+    if (flip) ctx.scale(-1, 1);
+    ctx.drawImage(img, -s / 2, -s, s, s);
+    ctx.restore();
+  }
+  draw() {
+    ctx.fillStyle = css(C.BG_MAIN); ctx.fillRect(0, 0, W, H);
+    const t = this.t, cx = W / 2, baseY = Math.floor(H / 2) + 96;
+
+    const grow = easeOutCubic(t / 1.2);
+    if (grow > 0) drawShadow(Rect.centered(cx, baseY - 6, 300 * grow + 1, 30 * grow + 1), 15 * grow, 18, 110 * grow, [0, 0]);
+
+    const side = easeOutCubic((t - 0.45) / 0.8), sideAlpha = clamp((t - 0.4) / 0.35), off = 92 * side;
+    this.piece("N", "splash_dark", 210, lerp(0.8, 1, side), cx - off - 8, baseY - 26, sideAlpha, true);
+    this.piece("R", "splash_dark", 200, lerp(0.8, 1, side), cx + off + 10, baseY - 24, sideAlpha);
+
+    this.piece("P", "splash_pawn", 260, lerp(0.35, 1, easeOutBack(t / 0.75)), cx, baseY + 6, clamp(t / 0.3));
+
+    const wa = easeInOut((t - 1.0) / 0.6);
+    if (wa > 0) drawSpaced("CLASSICAL CHESS", font(22, true), C.LIGHT, 6, cx, baseY + 40, wa);
+  }
+}
+
 class HomeScreen extends Screen {
   constructor(app) {
     super(app);
@@ -1967,16 +1991,14 @@ class App {
     this.p1White = data && typeof data.p1White === "boolean" ? data.p1White : true;
     this.mouse = [-1, -1]; this.pointerType = "mouse"; this.handCursor = false;
     this.screen = null; this.state = null; this.pending = null; this.fade = null;
-    this.SCREENS = { HOME: HomeScreen, SETUP: SetupScreen, GAME: GameScreen, HISTORY: HistoryScreen };
+    this.SCREENS = { SPLASH: SplashScreen, HOME: HomeScreen, SETUP: SetupScreen, GAME: GameScreen, HISTORY: HistoryScreen };
     this.layout();
     new ResizeObserver(() => this.layout()).observe(this.wrap);
     window.addEventListener("resize", () => this.layout());
     this.bindEvents();
     if (data && data.game) { this.go("GAME", { white: data.game.white, black: data.game.black, restore: data.game }); }
-    else this.go("HOME");
+    else this.go(data && data.state ? "HOME" : "SPLASH");
     this.applyPending(false);
-    this.blocked = !(data && (data.game || data.state));   // true while the intro video plays
-    if (this.blocked) runIntro(this); else removeIntro();
     this.last = performance.now();
     requestAnimationFrame((t) => this.frame(t));
   }
@@ -2000,7 +2022,7 @@ class App {
     return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height];
   }
   dispatch(ev) {
-    if (this.pending || this.blocked) return;
+    if (this.pending) return;
     if (this.fade && (ev.type === "down" || ev.type === "up")) return;
     this.screen.handle(ev);
   }
@@ -2095,53 +2117,6 @@ class App {
   }
 }
 
-
-/* ================================================================ intro */
-/* Full-window logo video that starts by itself (same behaviour as Chrono Calc).
-   It tries to play with sound; browsers that block that play it muted.
-   Esc / Enter / Space end it early. */
-function removeIntro() { const el = document.getElementById("intro"); if (el) el.remove(); }
-function runIntro(app) {
-  const intro = document.getElementById("intro");
-  if (!intro) { app.blocked = false; return; }
-  const video = intro.querySelector("video");
-  let done = false;
-  const timers = [];
-  const finish = () => {
-    if (done) return;
-    done = true;
-    timers.forEach(clearTimeout);
-    intro.classList.add("leaving");
-    try { video.pause(); } catch (e) {}
-    app.blocked = false;
-    setTimeout(removeIntro, REDUCED_MOTION ? 0 : 600);
-  };
-  video.addEventListener("playing", () => intro.classList.add("playing"));
-  video.addEventListener("ended", finish);
-  video.addEventListener("error", finish);
-  const sources = video.querySelectorAll("source");
-  if (sources.length) sources[sources.length - 1].addEventListener("error", finish);
-
-  window.addEventListener("keydown", (e) => {
-    if (done) return;
-    if (["Escape", "Enter", " "].includes(e.key)) { e.preventDefault(); app.sound.unlock(); finish(); }
-  });
-
-  // if playback never really starts, don't hold the game hostage
-  timers.push(setTimeout(() => { if (!video.currentTime) finish(); }, 3500));
-  // hard cap a little past the clip's own 4 s
-  timers.push(setTimeout(finish, 8000));
-
-  video.muted = false;
-  const playMuted = () => {
-    video.muted = true;
-    return video.play();
-  };
-  (app.sound.muted ? playMuted() : video.play().catch((err) => {
-    if (err && err.name === "NotSupportedError") throw err;
-    return playMuted();
-  })).catch(finish);
-}
 
 /* ================================================================= boot */
 let APP = null;

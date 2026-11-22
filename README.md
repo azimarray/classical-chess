@@ -20,11 +20,11 @@ This repository holds two versions of the same game:
 - **Move list:** algebraic notation in a scrolling strip, with the latest move highlighted.
 - **Material:** captured pieces and the current material lead (+1, +3, ...) beside each player.
 - **Match history:** results, move counts and how long ago each game was played. Delete single matches or clear everything.
-- **Intro:** the AZIM ARCHIVE logo animation plays when the site opens.
+- **Opening animation:** a golden pawn pops up, a knight and rook slide out from behind it, and the CLASSICAL CHESS wordmark fades in (same as the desktop version).
 
 ## Host the website
 
-The website is three files at the top of this repository: `index.html`, `splash.mp4` and `splash.webm`. They have to stay in the same folder. There is no build step.
+The website is a single file at the top of this repository: `index.html`. There is no build step.
 
 ### GitHub Pages
 
@@ -58,9 +58,9 @@ python -m http.server 8000
 | Promote | Pick from the card that opens over the promotion square |
 | Resign / offer draw | Flag and ½ buttons in the header (they act for the side to move) |
 | Mute | Speaker button, `M`, or **Sound On/Off** on the home screen |
-| Skip the intro | Press `Esc`, `Enter` or `Space` |
+| Skip the opening animation | Press any key or click |
 
-The intro starts by itself. Browsers only allow sound after the visitor has interacted with a site, so on a first visit most browsers play it muted. Game sounds turn on with the first click or tap.
+The opening animation runs by itself for about 2.5 seconds. Game sounds turn on with the first click or tap, because browsers only allow sound after the visitor has interacted with a site.
 
 ## Desktop version
 
@@ -80,7 +80,7 @@ Every push and pull request runs two test jobs on GitHub Actions (see the **Acti
 | Job | What it covers |
 |---|---|
 | **Desktop rules** (Python, 74 tests) | Every chess rule, notation, FEN, the clock and saving history, plus perft move counts against published reference positions |
-| **Website** (Chromium, 30 tests) | The rules engine running in the real page, the intro (with and without sound allowed, keyboard skip), home and setup screens, click and drag moves, castling, en passant, promotion, checkmate, repetition, resign, draw offers, timeouts, leaving a game, rematch, saving, listing and deleting match history, keyboard shortcuts, sound effects, layout at five screen sizes from laptop to small phone, and no JavaScript errors |
+| **Website** (Chromium, 30 tests) | The rules engine running in the real page, the opening animation (drawn pieces, auto-advance, key and click skip), home and setup screens, click and drag moves, castling, en passant, promotion, checkmate, repetition, resign, draw offers, timeouts, leaving a game, rematch, saving, listing and deleting match history, keyboard shortcuts, sound effects, layout at five screen sizes from laptop to small phone, and no JavaScript errors |
 
 Run them on your own computer:
 
