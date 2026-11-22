@@ -11,7 +11,7 @@ This repository holds three versions of the same game:
 | Language | HTML + JavaScript | Python + Pygame | Python (Streamlit) server |
 | How to play | Open the site in any browser, on any device | `python main.py` | `streamlit run app.py`, or host it (for example on Hugging Face) |
 | Needs installing | Nothing | Python 3.9+ and Pygame | Python and Streamlit |
-| Match history | Saved in the player's browser | Saved to `match_history.json` | Kept for the current visit only |
+| Match history | Saved in the player's browser | Saved to `match_history.json` | `app.py`: saved in the player's browser; `app_python.py`: current visit only |
 
 ## Features
 
