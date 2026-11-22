@@ -4,14 +4,14 @@
 
 Two-player, pass-and-play chess with full FIDE rule enforcement, 10-minute Rapid clocks, hand-drawn vector pieces and synthesised sound effects. Two players share one screen and take turns.
 
-This repository holds two versions of the same game:
+This repository holds three versions of the same game:
 
-| | Website (this folder) | Desktop (`desktop/`) |
-|---|---|---|
-| Language | HTML + JavaScript | Python + Pygame |
-| How to play | Open the site in any browser, on any device | `python main.py` |
-| Needs installing | Nothing | Python 3.9+ and Pygame |
-| Match history | Saved in the player's browser | Saved to `match_history.json` |
+| | Website (this folder) | Desktop (`desktop/`) | Streamlit (`streamlit-space/`) |
+|---|---|---|---|
+| Language | HTML + JavaScript | Python + Pygame | Python + Streamlit |
+| How to play | Open the site in any browser, on any device | `python main.py` | `streamlit run app.py`, or host it (for example on Hugging Face) |
+| Needs installing | Nothing | Python 3.9+ and Pygame | Python and Streamlit |
+| Match history | Saved in the player's browser | Saved to `match_history.json` | Kept for the current visit only |
 
 ## Features
 
@@ -73,13 +73,18 @@ python main.py
 python -m unittest test_chess.py -v   # 74 rule tests, no window needed
 ```
 
+## Streamlit version
+
+A Python version that runs in the browser, built to be hosted (for example as a Hugging Face Space). It reuses the same rules engine as the desktop version. See [`streamlit-space/README.md`](streamlit-space/README.md) for how to run it and how to put it on Hugging Face.
+
 ## Tests
 
-Every push and pull request runs two test jobs on GitHub Actions (see the **Actions** tab, or the badge at the top):
+Every push and pull request runs three test jobs on GitHub Actions (see the **Actions** tab, or the badge at the top):
 
 | Job | What it covers |
 |---|---|
 | **Desktop rules** (Python, 74 tests) | Every chess rule, notation, FEN, the clock and saving history, plus perft move counts against published reference positions |
+| **Streamlit version** (Python, 26 tests) | The move, clock and history logic, the SVG board, every screen of the Streamlit page (run against a stand-in for Streamlit), and a check that its engine files are identical to the desktop ones |
 | **Website** (Chromium, 28 tests) | The rules engine running in the real page, the opening animation (drawn pieces, auto-advance, key and click skip), home and setup screens, click and drag moves, castling, en passant, promotion, checkmate, repetition, resign, draw offers, timeouts, leaving a game, rematch, saving, listing and deleting match history, keyboard shortcuts, sound effects, layout at five screen sizes from laptop to small phone, and no JavaScript errors |
 
 Run them on your own computer:

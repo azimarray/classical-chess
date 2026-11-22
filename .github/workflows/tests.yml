@@ -19,6 +19,18 @@ jobs:
         working-directory: desktop
         run: python -m unittest test_chess.py -v
 
+  streamlit:
+    name: Streamlit version (Python, 26 tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run tests (no Streamlit install needed)
+        working-directory: streamlit-space
+        run: python -m unittest test_streamlit_space.py -v
+
   website:
     name: Website (Chromium, end-to-end)
     runs-on: ubuntu-latest
