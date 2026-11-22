@@ -80,7 +80,7 @@ Every push and pull request runs two test jobs on GitHub Actions (see the **Acti
 | Job | What it covers |
 |---|---|
 | **Desktop rules** (Python, 74 tests) | Every chess rule, notation, FEN, the clock and saving history, plus perft move counts against published reference positions |
-| **Website** (Chromium, 30 tests) | The rules engine running in the real page, the opening animation (drawn pieces, auto-advance, key and click skip), home and setup screens, click and drag moves, castling, en passant, promotion, checkmate, repetition, resign, draw offers, timeouts, leaving a game, rematch, saving, listing and deleting match history, keyboard shortcuts, sound effects, layout at five screen sizes from laptop to small phone, and no JavaScript errors |
+| **Website** (Chromium, 28 tests) | The rules engine running in the real page, the opening animation (drawn pieces, auto-advance, key and click skip), home and setup screens, click and drag moves, castling, en passant, promotion, checkmate, repetition, resign, draw offers, timeouts, leaving a game, rematch, saving, listing and deleting match history, keyboard shortcuts, sound effects, layout at five screen sizes from laptop to small phone, and no JavaScript errors |
 
 Run them on your own computer:
 
